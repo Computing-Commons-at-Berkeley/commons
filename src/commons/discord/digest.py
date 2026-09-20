@@ -1,0 +1,102 @@
+"""The /digest workflow: configured Discord activity -> durable digest.
+
+Discord-free on purpose (same pattern as archive.py and project.py) so it can be
+tested without a live Discord connection. Candidate collection happens in the
+Discord layer; this service only synthesizes and persists.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from commons.community_repo.digests import (
+    digest_relative_path,
+    plan_digest_name,
+    render_digest_artifact,
+)
+from commons.community_repo.git import CommunityRepo
+from commons.community_repo.schemas import DigestArtifact
+from commons.digest import (
+    ChannelActivity,
+    DigestPeriod,
+    build_candidate_text,
+    generate_digest,
+)
+from commons.errors import DigestError
+from commons.llm import LLMClient
+
+
+@dataclass(frozen=True)
+class DigestRequest:
+    period: str = "7d"
+    activity: list[ChannelActivity] = field(default_factory=list)
+    category: str | None = None
+    requested_by: str = "unknown"
+
+
+@dataclass(frozen=True)
+class DigestOutcome:
+    period: str
+    relative_path: str
+    section_headings: list[str]
+    commit_sha: str | None
+    detail: str = ""
+
+
+class DigestService:
+    """Builds one durable digest from pre-collected candidates."""
+
+    def __init__(
+        self,
+        repo: CommunityRepo,
+        llm: LLMClient,
+        *,
+        max_article_chars: int = 12000,
+        max_per_channel: int = 40,
+    ) -> None:
+        self.repo = repo
+        self.llm = llm
+        self.max_article_chars = max_article_chars
+        self.max_per_channel = max_per_channel
+
+    @property
+    def data_root(self) -> Path:
+        return self.repo.path / "data"
+
+    def generate(self, request: DigestRequest) -> DigestOutcome:
+        period = DigestPeriod.from_label(request.period)
+        candidate_text = build_candidate_text(
+            request.activity,
+            max_chars=self.max_article_chars,
+            max_per_channel=self.max_per_channel,
+        )
+        if not candidate_text.strip():
+            raise DigestError("no candidate activity to summarize for this period")
+
+        sections = generate_digest(
+            self.llm,
+            period=period,
+            candidate_text=candidate_text,
+            category=request.category,
+        )
+        artifact = DigestArtifact(
+            period_start=period.start,
+            period_end=period.end,
+            category=request.category,
+            sections=sections,
+        )
+        name = plan_digest_name(period.start, period.label, category=request.category)
+        relative_path = digest_relative_path(name)
+        result = self.repo.write_artifact(
+            relative_path,
+            render_digest_artifact(artifact),
+            commit_message=f"digest: add {name} digest",
+        )
+        return DigestOutcome(
+            period=period.label,
+            relative_path=relative_path,
+            section_headings=[section.heading for section in sections],
+            commit_sha=result.commit_sha,
+            detail=result.detail,
+        )

@@ -45,3 +45,7 @@ class ArchiveError(CommonsError):
 
 class ProjectError(CommonsError):
     """The /project workflow could not be completed."""
+
+
+class DigestError(CommonsError):
+    """The /digest workflow could not be completed."""

@@ -94,3 +94,21 @@ def parse_section_text(text: str) -> str:
 
     stripped = text.strip()
     return "" if stripped == NONE_RECORDED else stripped
+
+
+def split_section_list(body: str) -> list[tuple[str, str]]:
+    """Split a body into ordered (heading, text) pairs, preserving heading case.
+
+    Unlike split_sections this keeps order and duplicates, which digests need.
+    """
+
+    sections: list[tuple[str, list[str]]] = []
+    current: list[str] | None = None
+    for line in body.splitlines():
+        match = _HEADING_RE.match(line.strip())
+        if match:
+            current = []
+            sections.append((match.group(1).strip(), current))
+        elif current is not None:
+            current.append(line)
+    return [(heading, "\n".join(lines).strip()) for heading, lines in sections]

@@ -1,8 +1,7 @@
 """Discord command registration for v0.1.
 
-/archive and /project are implemented here. /digest is added next, in plan
-order. Commands stay thin: they translate Discord objects into DTOs and hand off
-to a workflow service.
+/archive, /project, and /digest are implemented here. Commands stay thin: they
+translate Discord objects into DTOs and hand off to a workflow service.
 """
 
 from __future__ import annotations
@@ -13,9 +12,11 @@ import discord
 from discord import app_commands
 
 from commons.community_repo.schemas import DiscordSource
+from commons.digest import ChannelActivity, DigestMessage, DigestPeriod
 from commons.discord.archive import ArchiveOutcome, ArchiveRequest, TranscriptMessage
+from commons.discord.digest import DigestOutcome, DigestRequest
 from commons.discord.project import ProjectCreateRequest, ProjectOutcome
-from commons.errors import ArchiveError, GitError, LLMError, ProjectError
+from commons.errors import ArchiveError, DigestError, GitError, LLMError, ProjectError
 from commons.logging import get_logger
 
 log = get_logger("commons.discord.commands")
@@ -198,6 +199,87 @@ def _project_embed(outcome: ProjectOutcome) -> discord.Embed:
     return embed
 
 
+async def _collect_activity(
+    interaction: discord.Interaction, period: DigestPeriod
+) -> list[ChannelActivity]:
+    """Read the configured digest channels for the period. No server-wide ingest."""
+
+    guild = interaction.guild
+    if guild is None:
+        return []
+    policy = getattr(interaction.client, "policy", None)
+    wanted = set(policy.digest.channels) if policy is not None else set()
+    if not wanted:
+        return []
+
+    activities: list[ChannelActivity] = []
+    for channel in guild.text_channels:
+        if channel.name not in wanted:
+            continue
+        messages: list[DigestMessage] = []
+        try:
+            async for message in channel.history(after=period.start, limit=200, oldest_first=True):
+                messages.append(
+                    DigestMessage(
+                        channel=channel.name,
+                        author=getattr(message.author, "display_name", str(message.author)),
+                        content=message.content or "",
+                        created_at=message.created_at.astimezone(UTC).isoformat(timespec="minutes"),
+                        jump_url=message.jump_url,
+                    )
+                )
+        except discord.HTTPException:
+            log.warning("could not read #%s for the digest", channel.name)
+        activities.append(ChannelActivity(channel=channel.name, messages=messages))
+    return activities
+
+
+async def _run_digest(
+    interaction: discord.Interaction,
+    *,
+    period_label: str,
+    category: str | None,
+) -> None:
+    await interaction.response.defer(thinking=True)
+    service = getattr(interaction.client, "digest_service", None)
+    if service is None:
+        await interaction.followup.send("Digests are not configured on this bot.")
+        return
+
+    try:
+        period = DigestPeriod.from_label(period_label)
+        activity = await _collect_activity(interaction, period)
+        request = DigestRequest(
+            period=period_label,
+            activity=activity,
+            category=category,
+            requested_by=interaction.user.display_name,
+        )
+        outcome = await interaction.client.loop.run_in_executor(None, service.generate, request)
+    except (DigestError, LLMError, GitError) as exc:
+        log.error("digest failed: %s", exc)
+        await interaction.followup.send(f"Digest failed: {exc}")
+        return
+    except Exception as exc:  # noqa: BLE001 - never claim success on an unknown failure
+        log.exception("digest failed unexpectedly")
+        await interaction.followup.send(f"Digest failed unexpectedly: {exc}")
+        return
+
+    await interaction.followup.send(embed=_digest_embed(outcome))
+
+
+def _digest_embed(outcome: DigestOutcome) -> discord.Embed:
+    embed = discord.Embed(title=f"Digest {outcome.period}", colour=discord.Colour.green())
+    embed.add_field(name="Artifact", value=outcome.relative_path, inline=False)
+    if outcome.section_headings:
+        embed.add_field(
+            name="Sections", value="\n".join(outcome.section_headings)[:1024], inline=False
+        )
+    if outcome.commit_sha:
+        embed.add_field(name="Commit", value=outcome.commit_sha[:12], inline=True)
+    return embed
+
+
 def register_commands(bot: discord.Client) -> None:
     context_menu = app_commands.ContextMenu(name="Archive", callback=archive_context_callback)
     bot.tree.add_command(context_menu)
@@ -264,6 +346,27 @@ def register_commands(bot: discord.Client) -> None:
         members: str | None = None,
     ) -> None:
         await _run_project(interaction, name=name, goal=goal, members=members)
+
+    @bot.tree.command(
+        name="digest", description="Summarize recent community activity into a durable digest"
+    )
+    @app_commands.describe(
+        period="Time window to summarize",
+        category="Optional category filter (used by the news and radar milestones)",
+    )
+    @app_commands.choices(
+        period=[
+            app_commands.Choice(name="last 24 hours", value="1d"),
+            app_commands.Choice(name="last 7 days", value="7d"),
+            app_commands.Choice(name="last 30 days", value="30d"),
+        ]
+    )
+    async def digest_command(
+        interaction: discord.Interaction,
+        period: str = "7d",
+        category: str | None = None,
+    ) -> None:
+        await _run_digest(interaction, period_label=period, category=category)
 
 
 async def archive_context_callback(

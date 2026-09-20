@@ -138,3 +138,40 @@ class ProjectArtifact(BaseModel):
         if not _REPO_RE.fullmatch(value):
             raise ValueError(f"repo must look like owner/name, got {value!r}")
         return value
+
+
+class DigestSection(BaseModel):
+    """One headed section of a digest."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    heading: str
+    body: str = ""
+
+    @field_validator("heading")
+    @classmethod
+    def _heading_not_empty(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("digest section heading must not be empty")
+        return value
+
+
+class DigestDraft(BaseModel):
+    """Structured LLM output for a digest."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sections: list[DigestSection] = Field(default_factory=list)
+
+
+class DigestArtifact(BaseModel):
+    """A durable digest (plan sections 15 and 31)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    period_start: datetime
+    period_end: datetime
+    generated_at: datetime = Field(default_factory=utcnow)
+    category: str | None = None
+    sections: list[DigestSection] = Field(default_factory=list)

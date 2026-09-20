@@ -10,6 +10,7 @@ from commons.community_repo.git import CommunityRepo
 from commons.config import PolicyConfig, load_policy_config
 from commons.discord.archive import ArchiveService
 from commons.discord.commands import register_commands
+from commons.discord.digest import DigestService
 from commons.discord.project import ProjectService
 from commons.errors import CommonsError
 from commons.llm import LLMClient, UsageLog
@@ -43,6 +44,11 @@ class CommonsBot(discord.Client):
             max_article_chars=policy.llm.max_article_chars,
         )
         self.project_service = ProjectService(repo)
+        self.digest_service = DigestService(
+            repo,
+            llm,
+            max_article_chars=policy.llm.max_article_chars,
+        )
 
     async def setup_hook(self) -> None:
         register_commands(self)

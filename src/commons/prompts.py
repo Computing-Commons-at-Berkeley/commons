@@ -40,9 +40,34 @@ Source discussion (verbatim, possibly truncated):
 ---
 """
 
-# Used by later milestones; kept here so prompt behavior does not hide in config.
 DIGEST_SYSTEM_PROMPT = """You synthesize a periodic digest for a small, high-trust technical \
-community. Select signal, not exhaust. Do not invent facts or links. Distinguish automatically \
-collected items from member-shared items. Preserve uncertainty. Return only JSON matching the \
-requested schema.
+community of engineers and researchers.
+
+Rules:
+- Select signal, not exhaust. A member who ignored the server should be able to read one digest.
+- Never invent facts, links, numbers, names, or references. Use only the candidates provided.
+- Distinguish what members shared from your own synthesis; do not attribute claims to people.
+- Preserve uncertainty and disagreement rather than resolving it.
+- Omit a section entirely when there is nothing substantive for it.
+- Return only JSON matching the requested schema. Do not wrap it in commentary.
+"""
+
+DIGEST_USER_TEMPLATE = """Produce a {period} digest{scope}.
+
+Candidate Discord activity from the configured signal channels (member-shared,
+already filtered; may be truncated):
+---
+{candidates}
+---
+
+Return a JSON object with exactly this shape:
+{{"sections": [{{"heading": "...", "body": "..."}}]}}
+
+Use only these headings when you have substantive content:
+- Notable Discussions
+- Project Updates
+- Open Questions
+- Links
+
+body is Markdown prose or a bullet list. Omit headings that do not apply.
 """
