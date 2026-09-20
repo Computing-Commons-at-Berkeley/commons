@@ -141,3 +141,38 @@ def test_render_transcript_truncates() -> None:
     messages = [TranscriptMessage(author="a", content="x" * 200)]
     text = render_transcript(messages, max_chars=50)
     assert text.endswith("[transcript truncated]")
+
+
+def test_archive_end_to_end_commits_locally_without_push(
+    repo_without_remote, tmp_path: Path
+) -> None:
+    """Full path against real Git: Discord payload -> artifact -> local commit.
+
+    The push is unavailable in this sandbox, so we assert on the locally
+    committed artifact and on idempotency; CI covers the push itself.
+    """
+
+    repo = CommunityRepo(repo_without_remote.path, lock_path=tmp_path / "lock")
+    service = ArchiveService(repo, FakeLLMClient())
+
+    with pytest.raises(GitPushError):
+        service.archive(make_request())
+
+    artifacts = list((repo_without_remote.path / "data" / "knowledge").glob("*.md"))
+    assert len(artifacts) == 1
+
+    parsed = parse_knowledge_artifact(artifacts[0].read_text(encoding="utf-8"))
+    assert parsed.title == "SGLang scheduling notes"
+    assert parsed.source.discord_message_id == 3
+    assert parsed.source.discord_thread_id == 4
+
+    log = subprocess.run(
+        ["git", "-C", str(repo_without_remote.path), "log", "--oneline"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "archive: add note on SGLang scheduling notes" in log.stdout
+
+    second = service.archive(make_request())
+    assert second.created is False
