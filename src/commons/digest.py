@@ -4,6 +4,9 @@ One code path serves the manual /digest command and the scheduled weekly digest
 (plan section 33). Deterministic candidate construction happens before any LLM
 call, and the LLM only synthesizes the candidate set (plan section 32): it does
 not crawl or decide community priorities from scratch.
+
+The candidate set deliberately mixes three sources into one digest: member-shared
+Discord activity, news items already stored in SQLite, and project records.
 """
 
 from __future__ import annotations
@@ -53,15 +56,35 @@ class ChannelActivity:
     messages: list[DigestMessage] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class NewsCandidate:
+    title: str
+    url: str
+    category: str
+    published_at: str | None = None
+    source_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ProjectCandidate:
+    title: str
+    status: str
+    relative_path: str | None = None
+
+
 def build_candidate_text(
     activity: list[ChannelActivity],
     *,
+    news: list[NewsCandidate] | None = None,
+    projects: list[ProjectCandidate] | None = None,
     max_chars: int = 12000,
     max_per_channel: int = 40,
+    max_news: int = 40,
 ) -> str:
     """Deterministic candidate text. No LLM involvement before this point."""
 
     blocks: list[str] = []
+
     for group in activity:
         lines: list[str] = []
         for message in group.messages[:max_per_channel]:
@@ -72,6 +95,18 @@ def build_candidate_text(
             lines.append(f"{message.author}{stamp}: {content}")
         if lines:
             blocks.append(f"## #{group.channel}\n" + "\n".join(lines))
+
+    by_category: dict[str, list[NewsCandidate]] = {}
+    for item in (news or [])[:max_news]:
+        by_category.setdefault(item.category, []).append(item)
+    for category in sorted(by_category):
+        lines = [f"- [{item.title}]({item.url})" for item in by_category[category]]
+        blocks.append(f"## News: {category}\n" + "\n".join(lines))
+
+    if projects:
+        lines = [f"- {project.title} (status: {project.status})" for project in projects]
+        blocks.append("## Projects\n" + "\n".join(lines))
+
     text = "\n\n".join(blocks)
     if len(text) > max_chars:
         text = text[:max_chars] + "\n\n[candidates truncated]"
@@ -91,7 +126,7 @@ def generate_digest(
     user = DIGEST_USER_TEMPLATE.format(
         period=period.label,
         scope=scope,
-        candidates=candidate_text or "(no candidate activity)",
+        candidates=candidate_text or "(no candidate material)",
     )
     data = client.complete_json(operation="digest", system=DIGEST_SYSTEM_PROMPT, user=user)
 

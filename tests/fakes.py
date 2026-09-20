@@ -28,11 +28,13 @@ class FakeLLMClient:
         self.payload = dict(payload) if payload is not None else dict(DEFAULT_ARCHIVE_PAYLOAD)
         self.error = error
         self.operations: list[str] = []
+        self.user_prompts: list[str] = []
 
     def complete_json(
         self, *, operation: str, system: str, user: str, **kwargs: Any
     ) -> dict[str, Any]:
         self.operations.append(operation)
+        self.user_prompts.append(user)
         if self.error is not None:
             raise self.error
         return dict(self.payload)

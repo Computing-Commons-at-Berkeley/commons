@@ -54,8 +54,8 @@ Rules:
 
 DIGEST_USER_TEMPLATE = """Produce a {period} digest{scope}.
 
-Candidate Discord activity from the configured signal channels (member-shared,
-already filtered; may be truncated):
+Candidate material (member-shared Discord activity, stored news items, and
+project records; already filtered, may be truncated):
 ---
 {candidates}
 ---
@@ -65,7 +65,11 @@ Return a JSON object with exactly this shape:
 
 Use only these headings when you have substantive content:
 - Notable Discussions
-- Project Updates
+- Project Activity
+- ML Research
+- Infrastructure
+- Economics / Industry
+- Berkeley / OSS Radar
 - Open Questions
 - Links
 

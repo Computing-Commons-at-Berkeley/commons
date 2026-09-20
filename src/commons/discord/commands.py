@@ -12,12 +12,15 @@ import discord
 from discord import app_commands
 
 from commons.community_repo.schemas import DiscordSource
-from commons.digest import ChannelActivity, DigestMessage, DigestPeriod
+from commons.digest import ChannelActivity, DigestMessage, DigestPeriod, NewsCandidate
 from commons.discord.archive import ArchiveOutcome, ArchiveRequest, TranscriptMessage
 from commons.discord.digest import DigestOutcome, DigestRequest
 from commons.discord.project import ProjectCreateRequest, ProjectOutcome
 from commons.errors import ArchiveError, DigestError, GitError, LLMError, ProjectError
 from commons.logging import get_logger
+from commons.news import db as news_db
+from commons.news.query import items_since
+from commons.settings import Settings
 
 log = get_logger("commons.discord.commands")
 
@@ -199,22 +202,19 @@ def _project_embed(outcome: ProjectOutcome) -> discord.Embed:
     return embed
 
 
-async def _collect_activity(
-    interaction: discord.Interaction, period: DigestPeriod
+async def collect_activity(
+    guild: discord.Guild,
+    channels: set[str],
+    period: DigestPeriod,
 ) -> list[ChannelActivity]:
     """Read the configured digest channels for the period. No server-wide ingest."""
 
-    guild = interaction.guild
-    if guild is None:
-        return []
-    policy = getattr(interaction.client, "policy", None)
-    wanted = set(policy.digest.channels) if policy is not None else set()
-    if not wanted:
+    if not channels:
         return []
 
     activities: list[ChannelActivity] = []
     for channel in guild.text_channels:
-        if channel.name not in wanted:
+        if channel.name not in channels:
             continue
         messages: list[DigestMessage] = []
         try:
@@ -234,6 +234,32 @@ async def _collect_activity(
     return activities
 
 
+def news_candidates_for(
+    settings: Settings,
+    period: DigestPeriod,
+    *,
+    limit: int = 200,
+) -> list[NewsCandidate]:
+    """Read stored news items for the period. One corpus, multiple views."""
+
+    connection = news_db.connect(settings.news_db_path)
+    try:
+        news_db.init_db(connection)
+        rows = items_since(connection, period.start, limit=limit)
+    finally:
+        connection.close()
+    return [
+        NewsCandidate(
+            title=row["title"],
+            url=row["url"],
+            category=row["category"],
+            published_at=row["published_at"],
+            source_id=row["source_id"],
+        )
+        for row in rows
+    ]
+
+
 async def _run_digest(
     interaction: discord.Interaction,
     *,
@@ -248,10 +274,19 @@ async def _run_digest(
 
     try:
         period = DigestPeriod.from_label(period_label)
-        activity = await _collect_activity(interaction, period)
+        policy = getattr(interaction.client, "policy", None)
+        channels = set(policy.digest.channels) if policy is not None else set()
+        activity = (
+            await collect_activity(interaction.guild, channels, period)
+            if interaction.guild is not None
+            else []
+        )
+        settings = getattr(interaction.client, "settings", None)
+        news = news_candidates_for(settings, period) if settings is not None else []
         request = DigestRequest(
             period=period_label,
             activity=activity,
+            news=news,
             category=category,
             requested_by=interaction.user.display_name,
         )
@@ -265,10 +300,10 @@ async def _run_digest(
         await interaction.followup.send(f"Digest failed unexpectedly: {exc}")
         return
 
-    await interaction.followup.send(embed=_digest_embed(outcome))
+    await interaction.followup.send(embed=digest_embed(outcome))
 
 
-def _digest_embed(outcome: DigestOutcome) -> discord.Embed:
+def digest_embed(outcome: DigestOutcome) -> discord.Embed:
     embed = discord.Embed(title=f"Digest {outcome.period}", colour=discord.Colour.green())
     embed.add_field(name="Artifact", value=outcome.relative_path, inline=False)
     if outcome.section_headings:

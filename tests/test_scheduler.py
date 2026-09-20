@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
+
+import pytest
 
 from commons.scheduler import Scheduler
 
@@ -30,3 +33,21 @@ def test_failing_job_does_not_stop_the_loop() -> None:
     ran = scheduler.run_pending()
     assert ran == ["bad", "good"]
     assert calls == ["good"]
+
+
+async def test_serve_runs_async_actions() -> None:
+    calls: list[str] = []
+
+    async def action() -> None:
+        calls.append("async")
+
+    scheduler = Scheduler()
+    scheduler.add("async-job", timedelta(seconds=0), action)
+
+    task = asyncio.create_task(scheduler.serve(poll_seconds=0.01))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert calls

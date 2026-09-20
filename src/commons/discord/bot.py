@@ -11,11 +11,17 @@ import discord
 
 from commons.community_repo.git import CommunityRepo
 from commons.config import PolicyConfig, load_policy_config
+from commons.digest import DigestPeriod
 from commons.discord.archive import ArchiveService
-from commons.discord.commands import register_commands
-from commons.discord.digest import DigestService
+from commons.discord.commands import (
+    collect_activity,
+    digest_embed,
+    news_candidates_for,
+    register_commands,
+)
+from commons.discord.digest import DigestRequest, DigestService
 from commons.discord.project import ProjectService
-from commons.errors import CommonsError
+from commons.errors import CommonsError, DigestError, GitError, LLMError
 from commons.llm import LLMClient, UsageLog
 from commons.logging import get_logger, setup_logging
 from commons.news.run import run_ingestion
@@ -55,6 +61,7 @@ class CommonsBot(discord.Client):
             max_article_chars=policy.llm.max_article_chars,
         )
         self.scheduler = build_scheduler(settings, policy)
+        self.scheduler.add("weekly-digest", timedelta(days=7), self._weekly_digest_job)
         self._scheduler_task: asyncio.Task[None] | None = None
 
     async def setup_hook(self) -> None:
@@ -77,6 +84,40 @@ class CommonsBot(discord.Client):
                 await self._scheduler_task
             self._scheduler_task = None
         await super().close()
+
+    async def _weekly_digest_job(self) -> None:
+        """Scheduled weekly digest: same code path as /digest, posted to #digest."""
+
+        if not self.policy.digest.scheduled_weekly:
+            return
+        guild_id = self.settings.discord_guild_id or self.settings.discord_test_guild_id
+        if guild_id is None:
+            log.warning("weekly digest skipped: no guild configured")
+            return
+        guild = self.get_guild(guild_id)
+        if guild is None:
+            log.warning("weekly digest skipped: guild %s is not available", guild_id)
+            return
+
+        period = DigestPeriod.from_label("7d")
+        try:
+            activity = await collect_activity(guild, set(self.policy.digest.channels), period)
+            request = DigestRequest(
+                period="7d",
+                activity=activity,
+                news=news_candidates_for(self.settings, period),
+                requested_by="scheduler",
+            )
+            outcome = await asyncio.to_thread(self.digest_service.generate, request)
+        except (DigestError, LLMError, GitError) as exc:
+            log.error("scheduled weekly digest failed: %s", exc)
+            return
+
+        channel = discord.utils.get(guild.text_channels, name="digest")
+        if channel is None:
+            log.warning("weekly digest wrote %s but #digest was not found", outcome.relative_path)
+            return
+        await channel.send(embed=digest_embed(outcome))
 
     async def on_ready(self) -> None:
         log.info("bot online as %s", self.user)

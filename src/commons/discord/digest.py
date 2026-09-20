@@ -1,8 +1,10 @@
-"""The /digest workflow: configured Discord activity -> durable digest.
+"""The /digest workflow: Discord activity + news + projects -> durable digest.
 
 Discord-free on purpose (same pattern as archive.py and project.py) so it can be
 tested without a live Discord connection. Candidate collection happens in the
-Discord layer; this service only synthesizes and persists.
+Discord layer; this service synthesizes and persists. Project records are read
+from the community repository so the same code path serves /digest and the
+scheduled weekly digest.
 """
 
 from __future__ import annotations
@@ -16,10 +18,13 @@ from commons.community_repo.digests import (
     render_digest_artifact,
 )
 from commons.community_repo.git import CommunityRepo
+from commons.community_repo.projects import list_projects
 from commons.community_repo.schemas import DigestArtifact
 from commons.digest import (
     ChannelActivity,
     DigestPeriod,
+    NewsCandidate,
+    ProjectCandidate,
     build_candidate_text,
     generate_digest,
 )
@@ -31,6 +36,8 @@ from commons.llm import LLMClient
 class DigestRequest:
     period: str = "7d"
     activity: list[ChannelActivity] = field(default_factory=list)
+    news: list[NewsCandidate] = field(default_factory=list)
+    projects: list[ProjectCandidate] | None = None
     category: str | None = None
     requested_by: str = "unknown"
 
@@ -64,15 +71,24 @@ class DigestService:
     def data_root(self) -> Path:
         return self.repo.path / "data"
 
+    def current_projects(self) -> list[ProjectCandidate]:
+        return [
+            ProjectCandidate(title=project.title, status=project.status)
+            for project in list_projects(self.data_root)
+        ]
+
     def generate(self, request: DigestRequest) -> DigestOutcome:
         period = DigestPeriod.from_label(request.period)
+        projects = request.projects if request.projects is not None else self.current_projects()
         candidate_text = build_candidate_text(
             request.activity,
+            news=request.news,
+            projects=projects,
             max_chars=self.max_article_chars,
             max_per_channel=self.max_per_channel,
         )
         if not candidate_text.strip():
-            raise DigestError("no candidate activity to summarize for this period")
+            raise DigestError("no candidate material to summarize for this period")
 
         sections = generate_digest(
             self.llm,
