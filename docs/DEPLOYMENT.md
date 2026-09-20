@@ -71,6 +71,10 @@ Discord server plus Git repository.
 
 ## Scheduled work
 
-Scheduling (news ingestion, watchlist polling, weekly digest) runs in-process in
-v0.1 and is added with the news milestone. It must never block Discord
-interaction handling.
+Scheduling runs in-process (`commons/scheduler.py`); there is no separate service.
+
+- news ingestion, on `policy.news.ingest_interval_minutes`
+- the weekly digest, which uses the same code path as `/digest` and posts to
+  `#digest` when `policy.digest.scheduled_weekly` is true
+
+Blocking work runs off the event loop, and one failing job never stops the loop.

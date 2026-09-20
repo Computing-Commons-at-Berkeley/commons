@@ -44,6 +44,10 @@ this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and GitHub-release ingestion, and 24h/7d/30d temporal queries (`commons/news/`).
 - In-process scheduling: news ingestion runs on the configured interval as part of
   the single runtime (`commons/scheduler.py`, `commons/news/run.py`).
+- Unified digest: one code path combines Discord activity, stored news items, and
+  project records into a single digest for `/digest` and the scheduled weekly
+  digest, which posts to `#digest` (`commons/digest.py`,
+  `commons/discord/digest.py`, `commons/discord/bot.py`).
 
 ### Changed
 

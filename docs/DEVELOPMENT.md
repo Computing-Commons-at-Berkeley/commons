@@ -73,9 +73,12 @@ The script is non-destructive: objects that exist in Discord but not in
 11. Run `/project` again with the same name, or from inside the same thread, and
     confirm it returns the existing record instead of creating a second one.
 12. Run `/digest period:7d` and confirm it writes `data/digests/<date>-7d.md`
-    with at least one section and pushes a commit.
+    with at least one section (including news or project activity when present)
+    and pushes a commit.
 13. In a quiet period, run `/digest period:1d` and confirm it fails clearly
     rather than committing an empty digest.
+14. Let the scheduler's weekly job run (or temporarily shorten its interval) and
+    confirm it posts a digest embed to `#digest` using the same code path.
 
 ## Layout
 
