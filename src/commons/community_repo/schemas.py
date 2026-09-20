@@ -1,14 +1,21 @@
 """Durable artifact schemas.
 
-Markdown with YAML frontmatter is the on-disk format (plan section 13). These
-models define the in-memory shape; rendering and parsing live in artifacts.py.
+Markdown with YAML frontmatter is the on-disk format (plan sections 13-14).
+These models define the in-memory shape; rendering and parsing live in
+artifacts.py and projects.py.
 """
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+_REPO_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+
+ProjectStatus = Literal["active", "paused", "archived"]
 
 
 def utcnow() -> datetime:
@@ -91,3 +98,43 @@ class KnowledgeArtifact(BaseModel):
             open_questions=list(draft.open_questions),
             references=list(draft.references),
         )
+
+
+class ProjectArtifact(BaseModel):
+    """A lightweight project record (spec section 8, plan section 14).
+
+    v0.1 deliberately keeps this small: no lifecycle machinery, no task system.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+    status: ProjectStatus = "active"
+    members: list[str] = Field(default_factory=list)
+    discord_thread_id: int | None = None
+    repo: str | None = None
+    created_at: datetime = Field(default_factory=utcnow)
+    goal: str = ""
+    current_state: str = ""
+    resources: list[str] = Field(default_factory=list)
+    next_actions: list[str] = Field(default_factory=list)
+
+    @field_validator("title")
+    @classmethod
+    def _title_not_empty(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("project title must not be empty")
+        return value
+
+    @field_validator("repo")
+    @classmethod
+    def _check_repo(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            return None
+        if not _REPO_RE.fullmatch(value):
+            raise ValueError(f"repo must look like owner/name, got {value!r}")
+        return value

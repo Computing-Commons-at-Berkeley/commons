@@ -41,3 +41,7 @@ class LLMError(CommonsError):
 
 class ArchiveError(CommonsError):
     """The /archive workflow could not be completed."""
+
+
+class ProjectError(CommonsError):
+    """The /project workflow could not be completed."""

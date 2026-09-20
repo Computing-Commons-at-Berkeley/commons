@@ -1,20 +1,36 @@
-"""Render, parse, and locate durable Markdown artifacts."""
+"""Knowledge artifacts: render, parse, and locate durable notes."""
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import Any
 
-import yaml
-
+from commons.community_repo.markdown import (
+    NONE_RECORDED,
+    parse_bullets,
+    parse_frontmatter,
+    parse_section_text,
+    render_bullets,
+    render_document,
+    split_sections,
+)
 from commons.community_repo.schemas import DiscordSource, KnowledgeArtifact
 from commons.errors import ArtifactError
 from commons.text import slugify, unique_slug
 
 KNOWLEDGE_DIR = "data/knowledge"
-_FENCE = "---"
-_NONE_RECORDED = "_(none recorded)_"
+
+__all__ = [
+    "KNOWLEDGE_DIR",
+    "existing_knowledge_slugs",
+    "find_artifact_by_source",
+    "knowledge_dir",
+    "knowledge_relative_path",
+    "parse_frontmatter",
+    "parse_knowledge_artifact",
+    "plan_slug",
+    "render_knowledge_artifact",
+]
 
 
 def knowledge_dir(data_root: Path) -> Path:
@@ -40,11 +56,6 @@ def plan_slug(data_root: Path, title: str) -> str:
     return unique_slug(slugify(title), existing_knowledge_slugs(data_root))
 
 
-def _render_bullets(items: list[str]) -> str:
-    rendered = [f"- {item.strip()}" for item in items if item and item.strip()]
-    return "\n".join(rendered) if rendered else _NONE_RECORDED
-
-
 def render_knowledge_artifact(artifact: KnowledgeArtifact) -> str:
     """Render a KnowledgeArtifact to Markdown with YAML frontmatter."""
 
@@ -56,74 +67,12 @@ def render_knowledge_artifact(artifact: KnowledgeArtifact) -> str:
         "source": artifact.source.model_dump(exclude_none=True),
     }
     sections = [
-        ("Summary", artifact.summary.strip() or _NONE_RECORDED),
-        ("Key Points", _render_bullets(artifact.key_points)),
-        ("Open Questions", _render_bullets(artifact.open_questions)),
-        ("References", _render_bullets(artifact.references)),
+        ("Summary", artifact.summary.strip() or NONE_RECORDED),
+        ("Key Points", render_bullets(artifact.key_points)),
+        ("Open Questions", render_bullets(artifact.open_questions)),
+        ("References", render_bullets(artifact.references)),
     ]
-
-    parts: list[str] = [
-        _FENCE,
-        yaml.safe_dump(frontmatter, sort_keys=False, allow_unicode=True).strip(),
-        _FENCE,
-        "",
-    ]
-    for heading, content in sections:
-        parts.extend([f"# {heading}", "", content, ""])
-    return "\n".join(parts).rstrip() + "\n"
-
-
-def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
-    """Split an artifact into (frontmatter mapping, body)."""
-
-    lines = text.splitlines()
-    if not lines or lines[0].strip() != _FENCE:
-        raise ArtifactError("artifact is missing YAML frontmatter")
-    end: int | None = None
-    for index in range(1, len(lines)):
-        if lines[index].strip() == _FENCE:
-            end = index
-            break
-    if end is None:
-        raise ArtifactError("artifact frontmatter is not terminated")
-    block = "\n".join(lines[1:end])
-    try:
-        data = yaml.safe_load(block) or {}
-    except yaml.YAMLError as exc:
-        raise ArtifactError(f"invalid artifact frontmatter: {exc}") from exc
-    if not isinstance(data, dict):
-        raise ArtifactError("artifact frontmatter must be a mapping")
-    body = "\n".join(lines[end + 1 :]).strip()
-    return data, body
-
-
-_HEADING_RE = re.compile(r"^#\s+(.*)$")
-
-
-def _split_sections(body: str) -> dict[str, str]:
-    """Split a Markdown body into {lowercased heading: text}."""
-
-    sections: dict[str, list[str]] = {}
-    current: str | None = None
-    for line in body.splitlines():
-        match = _HEADING_RE.match(line.strip())
-        if match:
-            current = match.group(1).strip().lower()
-            sections[current] = []
-        elif current is not None:
-            sections[current].append(line)
-    return {heading: "\n".join(lines).strip() for heading, lines in sections.items()}
-
-
-def _parse_bullets(text: str) -> list[str]:
-    items: list[str] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("- "):
-            value = stripped[2:].strip()
-            if value and value != _NONE_RECORDED:
-                items.append(value)
-    return items
+    return render_document(frontmatter, sections)
 
 
 def parse_knowledge_artifact(text: str) -> KnowledgeArtifact:
@@ -134,12 +83,12 @@ def parse_knowledge_artifact(text: str) -> KnowledgeArtifact:
     """
 
     data, body = parse_frontmatter(text)
-    sections = _split_sections(body)
+    sections = split_sections(body)
     payload: dict[str, Any] = dict(data)
-    payload["summary"] = sections.get("summary", "")
-    payload["key_points"] = _parse_bullets(sections.get("key points", ""))
-    payload["open_questions"] = _parse_bullets(sections.get("open questions", ""))
-    payload["references"] = _parse_bullets(sections.get("references", ""))
+    payload["summary"] = parse_section_text(sections.get("summary", ""))
+    payload["key_points"] = parse_bullets(sections.get("key points", ""))
+    payload["open_questions"] = parse_bullets(sections.get("open questions", ""))
+    payload["references"] = parse_bullets(sections.get("references", ""))
     try:
         return KnowledgeArtifact.model_validate(payload)
     except Exception as exc:  # pydantic ValidationError

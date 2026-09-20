@@ -1,7 +1,8 @@
 """Discord command registration for v0.1.
 
-Only the /archive slice is implemented here for now. /project and /digest are
-added next, in plan order.
+/archive and /project are implemented here. /digest is added next, in plan
+order. Commands stay thin: they translate Discord objects into DTOs and hand off
+to a workflow service.
 """
 
 from __future__ import annotations
@@ -13,7 +14,8 @@ from discord import app_commands
 
 from commons.community_repo.schemas import DiscordSource
 from commons.discord.archive import ArchiveOutcome, ArchiveRequest, TranscriptMessage
-from commons.errors import ArchiveError, GitError, LLMError
+from commons.discord.project import ProjectCreateRequest, ProjectOutcome
+from commons.errors import ArchiveError, GitError, LLMError, ProjectError
 from commons.logging import get_logger
 
 log = get_logger("commons.discord.commands")
@@ -139,6 +141,63 @@ def _outcome_embed(outcome: ArchiveOutcome) -> discord.Embed:
     return embed
 
 
+def _split_members(value: str | None) -> list[str]:
+    if not value:
+        return []
+    cleaned = value.replace(",", " ")
+    return [item.strip() for item in cleaned.split() if item.strip()]
+
+
+async def _run_project(
+    interaction: discord.Interaction,
+    *,
+    name: str,
+    goal: str | None,
+    members: str | None,
+) -> None:
+    await interaction.response.defer(thinking=True)
+    service = getattr(interaction.client, "project_service", None)
+    if service is None:
+        await interaction.followup.send("Projects are not configured on this bot.")
+        return
+
+    thread_id = interaction.channel.id if isinstance(interaction.channel, discord.Thread) else None
+    member_list = _split_members(members) or [interaction.user.display_name]
+    request = ProjectCreateRequest(
+        name=name,
+        goal=goal or "",
+        members=member_list,
+        discord_thread_id=thread_id,
+    )
+    try:
+        outcome = await interaction.client.loop.run_in_executor(None, service.create, request)
+    except (ProjectError, GitError) as exc:
+        log.error("project creation failed: %s", exc)
+        await interaction.followup.send(f"Project creation failed: {exc}")
+        return
+    except Exception as exc:  # noqa: BLE001 - never claim success on an unknown failure
+        log.exception("project creation failed unexpectedly")
+        await interaction.followup.send(f"Project creation failed unexpectedly: {exc}")
+        return
+
+    await interaction.followup.send(embed=_project_embed(outcome))
+
+
+def _project_embed(outcome: ProjectOutcome) -> discord.Embed:
+    embed = discord.Embed(
+        title="Project created" if outcome.created else "Project already exists",
+        description=outcome.title,
+        colour=discord.Colour.green() if outcome.created else discord.Colour.blurple(),
+    )
+    embed.add_field(name="Status", value=outcome.status, inline=True)
+    embed.add_field(name="Artifact", value=outcome.relative_path, inline=False)
+    if outcome.commit_sha:
+        embed.add_field(name="Commit", value=outcome.commit_sha[:12], inline=True)
+    if outcome.detail:
+        embed.add_field(name="Note", value=outcome.detail, inline=False)
+    return embed
+
+
 def register_commands(bot: discord.Client) -> None:
     context_menu = app_commands.ContextMenu(name="Archive", callback=archive_context_callback)
     bot.tree.add_command(context_menu)
@@ -189,6 +248,22 @@ def register_commands(bot: discord.Client) -> None:
             )
             return
         await _run_archive(interaction, message, title_hint=title)
+
+    @bot.tree.command(
+        name="project", description="Create a lightweight project record from this discussion"
+    )
+    @app_commands.describe(
+        name="Project name",
+        goal="Optional one-line goal",
+        members="Optional members, comma or space separated",
+    )
+    async def project_command(
+        interaction: discord.Interaction,
+        name: str,
+        goal: str | None = None,
+        members: str | None = None,
+    ) -> None:
+        await _run_project(interaction, name=name, goal=goal, members=members)
 
 
 async def archive_context_callback(
