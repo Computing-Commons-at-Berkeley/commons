@@ -46,13 +46,17 @@ def test_write_artifact_is_idempotent_for_identical_content(
         assert repo.write_artifact(
             "data/knowledge/a.md", "hello\n", commit_message="archive: add a"
         ).committed
+        second = repo.write_artifact(
+            "data/knowledge/a.md", "hello\n", commit_message="archive: add a"
+        )
+        assert second.committed is False
+        assert second.pushed is False
     else:
+        # R04: a failed push stays visibly failed on retry until explicit recovery.
         with pytest.raises(GitPushError):
             repo.write_artifact("data/knowledge/a.md", "hello\n", commit_message="archive: add a")
-
-    second = repo.write_artifact("data/knowledge/a.md", "hello\n", commit_message="archive: add a")
-    assert second.committed is False
-    assert second.pushed is False
+        with pytest.raises(GitPushError):
+            repo.write_artifact("data/knowledge/a.md", "hello\n", commit_message="archive: add a")
 
 
 def test_write_artifact_never_fakes_success_on_push_failure(
@@ -80,6 +84,7 @@ def test_write_artifact_success_flow_with_fake_runner(tmp_path: Path) -> None:
         def __init__(self, path: Path, **kwargs) -> None:
             super().__init__(path, **kwargs)
             self.commands: list[tuple[str, ...]] = []
+            self.added = False
 
         def is_repo(self) -> bool:
             return True
@@ -90,8 +95,11 @@ def test_write_artifact_success_flow_with_fake_runner(tmp_path: Path) -> None:
                 return CommandResult(0, "main", "")
             if args[:2] == ("rev-parse", "HEAD"):
                 return CommandResult(0, "abc123", "")
+            if args and args[0] == "add":
+                self.added = True
+                return CommandResult(0, "", "")
             if args and args[0] == "diff":
-                return CommandResult(0, "data/knowledge/a.md", "")
+                return CommandResult(0, "data/knowledge/a.md" if self.added else "", "")
             return CommandResult(0, "", "")
 
     repo = RecordingRepo(tmp_path / "community", lock_path=None)

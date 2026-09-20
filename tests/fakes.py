@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from commons.community_repo.git import GitWriteResult
+from commons.community_repo.git import ArtifactPlan, GitWriteResult, LockedWriteResult
 
 DEFAULT_ARCHIVE_PAYLOAD: dict[str, Any] = {
     "title": "SGLang scheduling notes",
@@ -50,10 +51,48 @@ class FakeRepo:
     def write_artifact(
         self, relative_path: str, content: str, *, commit_message: str
     ) -> GitWriteResult:
-        target = self.path / relative_path
+        return self.write_artifact_locked(
+            commit_message=commit_message,
+            prepare=lambda _root: ArtifactPlan(relative_path=relative_path, content=content),
+        ).git
+
+    def write_artifact_locked(
+        self,
+        *,
+        commit_message: str,
+        prepare: Callable[[Path], ArtifactPlan | None],
+    ) -> LockedWriteResult:
+        plan = prepare(self.path)
+        if plan is None:
+            return LockedWriteResult(
+                plan=None, git=GitWriteResult("", committed=False, pushed=False, commit_sha=None)
+            )
+        if plan.content is None:
+            return LockedWriteResult(
+                plan=plan,
+                git=GitWriteResult(
+                    plan.relative_path, committed=False, pushed=False, commit_sha=None
+                ),
+            )
+        target = self.path / plan.relative_path
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8", newline="\n")
+        previous = target.read_text(encoding="utf-8") if target.exists() else None
+        target.write_text(plan.content, encoding="utf-8", newline="\n")
+        if previous == plan.content:
+            return LockedWriteResult(
+                plan=plan,
+                git=GitWriteResult(
+                    plan.relative_path,
+                    committed=False,
+                    pushed=False,
+                    commit_sha=None,
+                    detail="no changes to commit",
+                ),
+            )
         self.commits.append(commit_message)
-        return GitWriteResult(
-            relative_path=relative_path, committed=True, pushed=True, commit_sha="deadbeef"
+        return LockedWriteResult(
+            plan=plan,
+            git=GitWriteResult(
+                plan.relative_path, committed=True, pushed=True, commit_sha="deadbeef"
+            ),
         )

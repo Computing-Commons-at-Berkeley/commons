@@ -4,17 +4,25 @@ Every durable write follows the sequence mandated by plan section 16:
 
     acquire lock -> git pull --rebase -> write -> git add -> commit -> push -> release lock
 
-If push fails we raise GitPushError. The local commit is kept, and the caller
-must not report success. Automation failure degrades convenience; it never
-disables the community.
+Correctness rules from the 2026-09-19 review:
+
+- the artifact path is chosen inside the lock, after synchronizing, so two
+  concurrent requests cannot reserve the same filename (R02);
+- an unexpected dirty index stops the write, and only our own artifact is ever
+  committed (R03);
+- a failed push is never reported as success, and a retry keeps the pending
+  state visible until an explicit recovery (R04);
+- the lock always honors its deadline and Git subprocesses are bounded (R09).
 """
 
 from __future__ import annotations
 
+import json
 import os
+import socket
 import subprocess
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +34,8 @@ log = get_logger(__name__)
 
 DEFAULT_BOT_NAME = "Technical Commons Bot"
 DEFAULT_BOT_EMAIL = "technical-commons-bot@users.noreply.github.com"
+DEFAULT_GIT_TIMEOUT = 120.0
+PUSHED_REF = "refs/tc/last-pushed"
 
 
 @dataclass(frozen=True)
@@ -48,6 +58,35 @@ class GitWriteResult:
     detail: str = ""
 
 
+@dataclass(frozen=True)
+class ArtifactPlan:
+    """What a workflow wants to write, decided inside the repository lock."""
+
+    relative_path: str
+    content: str | None = None  # None means the artifact already exists
+    detail: str = ""
+
+
+@dataclass(frozen=True)
+class LockedWriteResult:
+    plan: ArtifactPlan | None
+    git: GitWriteResult
+
+
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0 or os.name == "nt":
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return True
+    return True
+
+
 class CommunityRepo:
     """A local checkout of the private community repository."""
 
@@ -61,6 +100,7 @@ class CommunityRepo:
         bot_email: str = DEFAULT_BOT_EMAIL,
         lock_path: Path | None = None,
         lock_timeout: float = 120.0,
+        git_timeout: float = DEFAULT_GIT_TIMEOUT,
     ) -> None:
         self.path = Path(path)
         self.remote = remote
@@ -69,18 +109,23 @@ class CommunityRepo:
         self.bot_email = bot_email
         self.lock_path = Path(lock_path) if lock_path is not None else None
         self.lock_timeout = lock_timeout
+        self.git_timeout = git_timeout
 
     # --- basics ---------------------------------------------------------
     def _git(self, *args: str, check: bool = False) -> CommandResult:
         command = ["git", "-C", str(self.path), *args]
-        process = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-        )
+        try:
+            process = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+                timeout=self.git_timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise GitError(f"git {' '.join(args)} timed out after {self.git_timeout:.0f}s") from exc
         result = CommandResult(
             returncode=process.returncode,
             stdout=(process.stdout or "").strip(),
@@ -114,6 +159,52 @@ class CommunityRepo:
             if line
         ]
 
+    def remote_configured(self) -> bool:
+        return bool(self._git("remote").stdout.strip())
+
+    def has_remote_tracking(self) -> bool:
+        ref = f"{self.remote}/{self.current_branch()}"
+        return self._git("rev-parse", "--verify", ref).ok
+
+    def has_unpushed_commits(self) -> bool:
+        """True when local commits are not known to be on the remote (R04)."""
+
+        head = self.head_sha()
+        if head is None:
+            return False
+
+        marker = self._git("rev-parse", "--verify", PUSHED_REF)
+        if marker.ok:
+            return head != marker.stdout
+
+        if not self.remote_configured():
+            return True
+
+        ref = self._git("rev-parse", "--verify", f"{self.remote}/{self.current_branch()}")
+        if not ref.ok:
+            return True
+        return head != ref.stdout
+
+    def has_pending_unpushed(self) -> bool:
+        """A divergence from an established remote branch that needs recovery."""
+
+        return (
+            self.remote_configured() and self.has_remote_tracking() and self.has_unpushed_commits()
+        )
+
+    def _mark_pushed(self) -> None:
+        head = self.head_sha()
+        if head is not None:
+            self._git("update-ref", PUSHED_REF, head)
+
+    def ensure_clean_index(self) -> None:
+        staged = self.staged_paths()
+        if staged:
+            raise GitError(
+                "refusing to write: the community checkout already has staged "
+                f"changes ({', '.join(staged)}); commit or unstage them first"
+            )
+
     # --- lock -----------------------------------------------------------
     @contextmanager
     def lock(self, timeout: float | None = None) -> Iterator[None]:
@@ -134,16 +225,20 @@ class CommunityRepo:
                     log.warning("removing stale community repo lock at %s", self.lock_path)
                     try:
                         os.unlink(self.lock_path)
+                        continue
                     except OSError:
+                        # Cannot remove it (for example a file still open on
+                        # Windows): fall through to the deadline instead of
+                        # spinning forever (R09).
                         pass
-                    continue
                 if time.monotonic() >= deadline:
                     raise GitError(
                         f"could not acquire community repo lock at {self.lock_path}"
                     ) from None
                 time.sleep(0.1)
         try:
-            os.write(handle, f"{os.getpid()}\n".encode())
+            owner = {"pid": os.getpid(), "host": socket.gethostname()}
+            os.write(handle, json.dumps(owner).encode())
             yield
         finally:
             if handle is not None:
@@ -153,13 +248,32 @@ class CommunityRepo:
             except OSError:
                 pass
 
+    def _read_lock_owner(self) -> dict[str, object]:
+        assert self.lock_path is not None
+        try:
+            data = json.loads(self.lock_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
     def _lock_is_stale(self) -> bool:
         assert self.lock_path is not None
         try:
             age = time.time() - self.lock_path.stat().st_mtime
         except OSError:
             return False
-        return age > self.lock_timeout
+        if age <= self.lock_timeout:
+            return False
+        owner = self._read_lock_owner()
+        owner_pid = int(owner.get("pid") or 0)
+        if (
+            os.name != "nt"
+            and owner.get("host") == socket.gethostname()
+            and owner_pid != os.getpid()
+            and _pid_alive(owner_pid)
+        ):
+            return False
+        return True
 
     # --- write path -----------------------------------------------------
     def pull_rebase(self) -> CommandResult:
@@ -184,45 +298,89 @@ class CommunityRepo:
             message,
             check=True,
         )
-        sha = self._git("rev-parse", "HEAD", check=True).stdout
-        return sha
+        return self._git("rev-parse", "HEAD", check=True).stdout
 
     def push(self) -> CommandResult:
         return self._git("push", self.remote, self.current_branch())
 
-    def write_artifact(
+    def _settle_pending(self, relative_path: str, detail: str = "") -> GitWriteResult:
+        if not self.has_unpushed_commits():
+            return GitWriteResult(
+                relative_path=relative_path,
+                committed=False,
+                pushed=False,
+                commit_sha=None,
+                detail=detail or "no changes to commit",
+            )
+        push = self.push()
+        if not push.ok:
+            raise GitPushError(
+                f"{relative_path} is committed locally but could not be pushed to "
+                f"{self.remote}/{self.current_branch()}: {push.stderr or push.stdout}"
+            )
+        self._mark_pushed()
+        return GitWriteResult(
+            relative_path=relative_path,
+            committed=False,
+            pushed=True,
+            commit_sha=self.head_sha(),
+            detail="pushed a previously pending commit",
+        )
+
+    def write_artifact_locked(
         self,
-        relative_path: str,
-        content: str,
         *,
         commit_message: str,
-    ) -> GitWriteResult:
-        """Write one artifact and persist it, or fail loudly."""
+        prepare: Callable[[Path], ArtifactPlan | None],
+    ) -> LockedWriteResult:
+        """Synchronize, then let prepare choose the path and content inside the lock."""
 
         if not self.is_repo():
             raise GitError(f"{self.path} is not a git repository")
 
         with self.lock():
+            self.ensure_clean_index()
+
             pull = self.pull_rebase()
             if not pull.ok:
-                log.warning(
-                    "git pull --rebase did not succeed; continuing with local state: %s",
-                    pull.stderr or pull.stdout,
+                if self.has_remote_tracking():
+                    raise GitError(
+                        "could not synchronize with the remote before writing: "
+                        f"{pull.stderr or pull.stdout}"
+                    )
+                log.info("no remote tracking branch yet; treating this as initial setup")
+
+            if self.has_pending_unpushed():
+                raise GitPushError(
+                    "the community checkout has unpushed commits; push or reset them "
+                    "explicitly before creating new artifacts"
                 )
 
-            target = self.path / relative_path
+            plan = prepare(self.path)
+            if plan is None:
+                return LockedWriteResult(
+                    plan=None,
+                    git=GitWriteResult("", committed=False, pushed=False, commit_sha=None),
+                )
+            if plan.content is None:
+                return LockedWriteResult(plan=plan, git=self._settle_pending(plan.relative_path))
+
+            target = self.path / plan.relative_path
             target.parent.mkdir(parents=True, exist_ok=True)
             # Force LF so artifacts are byte-stable across platforms (see D006).
-            target.write_text(content, encoding="utf-8", newline="\n")
-            self.add(relative_path)
+            target.write_text(plan.content, encoding="utf-8", newline="\n")
+            self.add(plan.relative_path)
 
-            if not self.staged_paths():
-                return GitWriteResult(
-                    relative_path=relative_path,
-                    committed=False,
-                    pushed=False,
-                    commit_sha=None,
-                    detail="no changes to commit",
+            staged = self.staged_paths()
+            if not staged:
+                return LockedWriteResult(
+                    plan=plan,
+                    git=self._settle_pending(plan.relative_path, "no changes to commit"),
+                )
+            if staged != [plan.relative_path]:
+                raise GitError(
+                    f"refusing to commit unexpected staged paths {staged}; "
+                    f"expected only {plan.relative_path}"
                 )
 
             sha = self.commit(commit_message)
@@ -232,9 +390,27 @@ class CommunityRepo:
                     f"committed {sha} but failed to push to "
                     f"{self.remote}/{self.current_branch()}: {push.stderr or push.stdout}"
                 )
-            return GitWriteResult(
-                relative_path=relative_path,
-                committed=True,
-                pushed=True,
-                commit_sha=sha,
+            self._mark_pushed()
+            return LockedWriteResult(
+                plan=plan,
+                git=GitWriteResult(
+                    relative_path=plan.relative_path,
+                    committed=True,
+                    pushed=True,
+                    commit_sha=sha,
+                ),
             )
+
+    def write_artifact(
+        self,
+        relative_path: str,
+        content: str,
+        *,
+        commit_message: str,
+    ) -> GitWriteResult:
+        """Write one artifact at a pre-chosen path (used by deterministic paths)."""
+
+        def prepare(_root: Path) -> ArtifactPlan:
+            return ArtifactPlan(relative_path=relative_path, content=content)
+
+        return self.write_artifact_locked(commit_message=commit_message, prepare=prepare).git

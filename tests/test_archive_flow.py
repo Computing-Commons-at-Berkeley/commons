@@ -6,11 +6,11 @@ from pathlib import Path
 import pytest
 
 from commons.community_repo.artifacts import parse_knowledge_artifact
-from commons.community_repo.git import CommunityRepo, GitWriteResult
+from commons.community_repo.git import CommunityRepo
 from commons.community_repo.schemas import DiscordSource
 from commons.discord.archive import ArchiveRequest, ArchiveService, TranscriptMessage
 from commons.errors import ArchiveError, GitPushError
-from fakes import FakeLLMClient
+from fakes import FakeLLMClient, FakeRepo
 
 
 def make_request() -> ArchiveRequest:
@@ -36,25 +36,6 @@ def make_request() -> ArchiveRequest:
         title_hint="batching",
         channel_name="infra",
     )
-
-
-class FakeRepo:
-    """A CommunityRepo stand-in that writes files without touching Git."""
-
-    def __init__(self, path: Path) -> None:
-        self.path = Path(path)
-        self.commits: list[str] = []
-
-    def write_artifact(
-        self, relative_path: str, content: str, *, commit_message: str
-    ) -> GitWriteResult:
-        target = self.path / relative_path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
-        self.commits.append(commit_message)
-        return GitWriteResult(
-            relative_path=relative_path, committed=True, pushed=True, commit_sha="deadbeef"
-        )
 
 
 def test_archive_writes_artifact_end_to_end_without_git(tmp_path: Path) -> None:
@@ -149,7 +130,8 @@ def test_archive_end_to_end_commits_locally_without_push(
     """Full path against real Git: Discord payload -> artifact -> local commit.
 
     The push is unavailable in this sandbox, so we assert on the locally
-    committed artifact and on idempotency; CI covers the push itself.
+    committed artifact and that a retry keeps the pending state visible (R04);
+    CI covers the successful push.
     """
 
     repo = CommunityRepo(repo_without_remote.path, lock_path=tmp_path / "lock")
@@ -174,5 +156,6 @@ def test_archive_end_to_end_commits_locally_without_push(
     )
     assert "archive: add note on SGLang scheduling notes" in log.stdout
 
-    second = service.archive(make_request())
-    assert second.created is False
+    # R04: the pending local commit keeps the retry failing until explicit recovery.
+    with pytest.raises(GitPushError):
+        service.archive(make_request())

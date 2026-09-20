@@ -3,6 +3,10 @@
 This module is discord-free on purpose. Discord-specific code lives in
 commands.py and bot.py and only translates Discord objects into the small DTOs
 defined here.
+
+Idempotency and filename allocation both happen inside the repository lock, after
+synchronizing, so concurrent requests cannot overwrite each other (review R02)
+and a retry after a failed push keeps failing visibly (R04).
 """
 
 from __future__ import annotations
@@ -17,7 +21,7 @@ from commons.community_repo.artifacts import (
     plan_slug,
     render_knowledge_artifact,
 )
-from commons.community_repo.git import CommunityRepo
+from commons.community_repo.git import ArtifactPlan, CommunityRepo
 from commons.community_repo.schemas import DiscordSource, KnowledgeArtifact
 from commons.errors import ArchiveError, ArtifactError
 from commons.llm import LLMClient, summarize_archive
@@ -95,19 +99,6 @@ class ArchiveService:
         return self.repo.path / "data"
 
     def archive(self, request: ArchiveRequest) -> ArchiveOutcome:
-        existing = find_artifact_by_source(self.data_root, request.source)
-        if existing is not None:
-            return ArchiveOutcome(
-                title=_read_title(existing),
-                relative_path=_relative_to(self.repo.path, existing),
-                created=False,
-                commit_sha=None,
-                detail=(
-                    "an artifact already references this Discord source; "
-                    "returning the existing note instead of creating a duplicate"
-                ),
-            )
-
         transcript = render_transcript(
             request.messages,
             max_chars=self.max_article_chars,
@@ -116,6 +107,8 @@ class ArchiveService:
         if not transcript.strip():
             raise ArchiveError("no readable messages were found to archive")
 
+        # The LLM call stays outside the lock; only the durable decision and
+        # write are serialized.
         draft = summarize_archive(
             self.llm,
             requested_by=request.requested_by,
@@ -128,21 +121,45 @@ class ArchiveService:
             source=request.source,
             created_by=request.requested_by,
         )
-        slug = plan_slug(self.data_root, artifact.title)
-        relative_path = knowledge_relative_path(slug)
         content = render_knowledge_artifact(artifact)
+        found: dict[str, str] = {}
 
-        result = self.repo.write_artifact(
-            relative_path,
-            content,
+        def prepare(root: Path) -> ArtifactPlan:
+            data_root = root / "data"
+            existing = find_artifact_by_source(data_root, request.source)
+            if existing is not None:
+                found["title"] = _read_title(existing)
+                return ArtifactPlan(
+                    relative_path=_relative_to(root, existing),
+                    content=None,
+                    detail=(
+                        "an artifact already references this Discord source; "
+                        "returning the existing note instead of creating a duplicate"
+                    ),
+                )
+            slug = plan_slug(data_root, artifact.title)
+            return ArtifactPlan(relative_path=knowledge_relative_path(slug), content=content)
+
+        locked = self.repo.write_artifact_locked(
             commit_message=f"archive: add note on {artifact.title}",
+            prepare=prepare,
         )
+        plan = locked.plan
+        if plan is None:
+            raise ArchiveError("archive produced no artifact plan")
+
+        created = plan.content is not None
+        detail = locked.git.detail
+        if not created:
+            detail = plan.detail
+            if locked.git.pushed:
+                detail = f"{plan.detail} ({locked.git.detail})"
         return ArchiveOutcome(
-            title=artifact.title,
-            relative_path=relative_path,
-            created=True,
-            commit_sha=result.commit_sha,
-            detail=result.detail,
+            title=found.get("title", artifact.title),
+            relative_path=plan.relative_path,
+            created=created,
+            commit_sha=locked.git.commit_sha,
+            detail=detail,
         )
 
 

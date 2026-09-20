@@ -2,7 +2,8 @@
 
 Discord-free on purpose (same pattern as archive.py) so it can be tested without
 a live Discord connection. A project record is deliberately small; v0.1 does not
-create a GitHub repository.
+create a GitHub repository. Thread/name idempotency and slug allocation happen
+inside the repository lock (review R02).
 """
 
 from __future__ import annotations
@@ -10,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from commons.community_repo.git import CommunityRepo
+from commons.community_repo.git import ArtifactPlan, CommunityRepo
 from commons.community_repo.projects import (
     find_project_by_thread,
     find_project_path,
@@ -47,6 +48,10 @@ class ProjectOutcome:
     detail: str = ""
 
 
+def _relative_to(repo_path: Path, path: Path) -> str:
+    return path.relative_to(repo_path).as_posix()
+
+
 class ProjectService:
     """Idempotent project-record writer."""
 
@@ -62,30 +67,7 @@ class ProjectService:
         if not name:
             raise ProjectError("project name must not be empty")
 
-        if request.discord_thread_id is not None:
-            linked = find_project_by_thread(self.data_root, request.discord_thread_id)
-            if linked is not None:
-                project = read_project(linked)
-                return self._outcome(
-                    project,
-                    linked,
-                    created=False,
-                    detail="this Discord thread is already linked to a project",
-                )
-
-        existing = find_project_path(self.data_root, slugify(name))
-        if existing is not None:
-            project = read_project(existing)
-            return self._outcome(
-                project,
-                existing,
-                created=False,
-                detail=(
-                    "a project with this name already exists; returning it instead of overwriting"
-                ),
-            )
-
-        project = ProjectArtifact(
+        new_project = ProjectArtifact(
             title=name,
             status=DEFAULT_STATUS,
             members=list(request.members),
@@ -93,21 +75,57 @@ class ProjectService:
             repo=request.repo,
             goal=request.goal.strip(),
         )
-        slug = plan_project_slug(self.data_root, name)
-        relative_path = project_relative_path(slug)
-        result = self.repo.write_artifact(
-            relative_path,
-            render_project_artifact(project),
-            commit_message=f"project: create {slug} project",
+        content = render_project_artifact(new_project)
+        found: dict[str, ProjectArtifact] = {}
+
+        def prepare(root: Path) -> ArtifactPlan:
+            data_root = root / "data"
+            if request.discord_thread_id is not None:
+                linked = find_project_by_thread(data_root, request.discord_thread_id)
+                if linked is not None:
+                    found["project"] = read_project(linked)
+                    return ArtifactPlan(
+                        relative_path=_relative_to(root, linked),
+                        content=None,
+                        detail="this Discord thread is already linked to a project",
+                    )
+            existing = find_project_path(data_root, slugify(name))
+            if existing is not None:
+                found["project"] = read_project(existing)
+                return ArtifactPlan(
+                    relative_path=_relative_to(root, existing),
+                    content=None,
+                    detail=(
+                        "a project with this name already exists; "
+                        "returning it instead of overwriting"
+                    ),
+                )
+            slug = plan_project_slug(data_root, name)
+            return ArtifactPlan(relative_path=project_relative_path(slug), content=content)
+
+        locked = self.repo.write_artifact_locked(
+            commit_message=f"project: create {slugify(name)} project",
+            prepare=prepare,
         )
+        plan = locked.plan
+        if plan is None:
+            raise ProjectError("project creation produced no plan")
+
+        created = plan.content is not None
+        project = found.get("project", new_project)
+        detail = locked.git.detail
+        if not created:
+            detail = plan.detail
+            if locked.git.pushed:
+                detail = f"{plan.detail} ({locked.git.detail})"
         return ProjectOutcome(
             title=project.title,
-            slug=slug,
-            relative_path=relative_path,
+            slug=Path(plan.relative_path).stem,
+            relative_path=plan.relative_path,
             status=project.status,
-            created=True,
-            commit_sha=result.commit_sha,
-            detail=result.detail,
+            created=created,
+            commit_sha=locked.git.commit_sha,
+            detail=detail,
         )
 
     def set_status(self, slug: str, status: ProjectStatus) -> ProjectOutcome:
@@ -123,32 +141,15 @@ class ProjectService:
             render_project_artifact(updated),
             commit_message=f"project: set {slug} status to {status}",
         )
-        return self._outcome(
-            updated,
-            path,
+        return ProjectOutcome(
+            title=updated.title,
+            slug=slug,
+            relative_path=project_relative_path(slug),
+            status=updated.status,
             created=False,
-            detail=f"status updated to {status}",
             commit_sha=result.commit_sha,
+            detail=f"status updated to {status}",
         )
 
     def list(self) -> list[ProjectArtifact]:
         return list_projects(self.data_root)
-
-    def _outcome(
-        self,
-        project: ProjectArtifact,
-        path: Path,
-        *,
-        created: bool,
-        detail: str,
-        commit_sha: str | None = None,
-    ) -> ProjectOutcome:
-        return ProjectOutcome(
-            title=project.title,
-            slug=path.stem,
-            relative_path=path.relative_to(self.repo.path).as_posix(),
-            status=project.status,
-            created=created,
-            commit_sha=commit_sha,
-            detail=detail,
-        )
