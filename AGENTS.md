@@ -33,6 +33,7 @@ src/commons/            importable package (module-first, no service boundaries)
   prompts.py            prompt text
   digest.py             digest logic (periods, candidate selection, synthesis)
   news/                 SQLite news state, RSS/GitHub ingestion, dedup, queries
+  github/               curated watchlist: GitHub releases/issues radar
   community_repo/       git writer, schemas, Markdown artifacts, projects, digests
   discord/              bot shell, commands, archive/project/digest workflows, sync
 scripts/sync_discord.py CLI wrapper around commons.discord.sync

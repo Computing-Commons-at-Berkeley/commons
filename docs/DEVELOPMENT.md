@@ -79,6 +79,9 @@ The script is non-destructive: objects that exist in Discord but not in
     rather than committing an empty digest.
 14. Let the scheduler's weekly job run (or temporarily shorten its interval) and
     confirm it posts a digest embed to `#digest` using the same code path.
+15. With `GITHUB_TOKEN` set, run `/digest period:7d` and confirm the Berkeley /
+    OSS Radar section reflects activity from `config/watchlists.yaml`, or is
+    omitted when there is nothing new.
 
 ## Layout
 

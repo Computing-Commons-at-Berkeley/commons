@@ -48,6 +48,9 @@ this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   project records into a single digest for `/digest` and the scheduled weekly
   digest, which posts to `#digest` (`commons/digest.py`,
   `commons/discord/digest.py`, `commons/discord/bot.py`).
+- Berkeley / OSS radar: curated `watchlists.yaml` activity (releases and selected
+  issues) fetched from the GitHub API, tracked in SQLite `watch_state`, and
+  included as the Berkeley / OSS Radar digest section (`commons/github/`).
 
 ### Changed
 

@@ -10,7 +10,7 @@ are no microservices.
 | `DISCORD_TOKEN` | yes | Bot token |
 | `DISCORD_GUILD_ID` | yes in production | Production guild for command sync |
 | `DISCORD_TEST_GUILD_ID` | no | Test guild; takes precedence for command sync |
-| `GITHUB_TOKEN` | later | GitHub API for the watchlist |
+| `GITHUB_TOKEN` | recommended | GitHub API for the OSS radar (higher rate limits) |
 | `GITHUB_ORG` | later | Organization name |
 | `COMMUNITY_REPO_PATH` | yes | Local checkout of the private community repository |
 | `LLM_API_KEY` | yes | LLM provider key |
