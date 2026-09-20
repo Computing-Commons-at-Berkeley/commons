@@ -18,10 +18,27 @@ from commons.community_repo.markdown import parse_frontmatter
 from commons.community_repo.projects import list_projects
 from commons.community_repo.schemas import DigestArtifact, KnowledgeArtifact, ProjectArtifact
 from commons.errors import ArtifactError
-from commons.news import db as news_db
 from commons.news.query import items_for_window
 
 ARTIFACT_DIRS = ("knowledge", "projects", "digests", "resources")
+
+
+def _readonly_connection(db_path: Path) -> sqlite3.Connection | None:
+    """Open the runtime database read-only. Never creates or migrates it.
+
+    The UI must not have side effects, so a missing database yields no rows
+    rather than an empty file (review: read-only UI probe created a database).
+    """
+
+    path = Path(db_path)
+    if not path.exists():
+        return None
+    try:
+        connection = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+    except sqlite3.OperationalError:
+        return None
+    connection.row_factory = sqlite3.Row
+    return connection
 
 
 def knowledge_artifacts(data_root: Path) -> list[KnowledgeArtifact]:
@@ -71,18 +88,20 @@ def news_items(
     category: str | None = None,
     limit: int = 200,
 ) -> list[dict[str, Any]]:
-    connection = news_db.connect(Path(db_path))
+    connection = _readonly_connection(Path(db_path))
+    if connection is None:
+        return []
     try:
-        news_db.init_db(connection)
         return items_for_window(connection, window, category=category, limit=limit)
     finally:
         connection.close()
 
 
 def watch_state(db_path: Path) -> list[dict[str, Any]]:
-    connection = news_db.connect(Path(db_path))
+    connection = _readonly_connection(Path(db_path))
+    if connection is None:
+        return []
     try:
-        news_db.init_db(connection)
         rows = connection.execute(
             "SELECT repo, last_checked_at, state_json FROM watch_state ORDER BY repo"
         ).fetchall()
@@ -149,9 +168,10 @@ def search(data_root: Path, db_path: Path, query: str, *, limit: int = 50) -> li
         if len(hits) >= limit:
             return hits
 
-    connection: sqlite3.Connection = news_db.connect(Path(db_path))
+    connection = _readonly_connection(Path(db_path))
+    if connection is None:
+        return hits
     try:
-        news_db.init_db(connection)
         rows = connection.execute(
             """
             SELECT title, url, category FROM news_items

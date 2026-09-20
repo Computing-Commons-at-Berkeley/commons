@@ -37,6 +37,14 @@ if projects:
 else:
     st.info("No project records yet.")
 
+st.header("Recent news (7d)")
+news = data.news_items(settings.news_db_path, "7d", limit=5)
+if news:
+    for row in news:
+        st.markdown(f"- [{row['title']}]({row['url']}) - {row['category']}")
+else:
+    st.info("No stored news yet. Run news ingestion first.")
+
 knowledge = data.knowledge_artifacts(data_root)
 st.header(f"Recent archives ({len(knowledge)})")
 for item in knowledge[:10]:

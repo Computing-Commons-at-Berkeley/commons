@@ -119,3 +119,13 @@ def test_search_across_artifacts_and_news(tmp_path: Path) -> None:
 def test_watch_state_is_empty_without_data(tmp_path: Path) -> None:
     _data_root, db_path = seed(tmp_path)
     assert data.watch_state(db_path) == []
+
+
+def test_missing_database_is_not_created(tmp_path: Path) -> None:
+    db_path = tmp_path / "missing" / "news.db"
+    data_root = tmp_path / "data"
+
+    assert data.news_items(db_path) == []
+    assert data.watch_state(db_path) == []
+    assert data.search(data_root, db_path, "anything") == []
+    assert not db_path.exists()

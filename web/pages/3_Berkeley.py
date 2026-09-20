@@ -25,3 +25,10 @@ for entry in watchlists.repositories:
     checked = state.get(entry.repo)
     st.caption(f"last checked: {checked['last_checked_at'] if checked else 'never'}")
     st.caption(f"watch: releases={entry.watch.releases} issues={entry.watch.issues}")
+
+st.header("Recent Berkeley / local news")
+local = data.news_items(settings.news_db_path, "30d", category="berkeley", limit=10)
+for row in local:
+    st.markdown(f"- [{row['title']}]({row['url']})")
+if not local:
+    st.info("No stored Berkeley items yet.")
