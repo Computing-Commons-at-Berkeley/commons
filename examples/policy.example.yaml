@@ -1,0 +1,25 @@
+digest:
+  channels:
+    - ml-research
+    - infra
+    - econ-industry
+    - berkeley-local
+    - build-log
+  scheduled_weekly: true
+  scheduled_daily: false
+
+archive:
+  allow_members: true
+  require_explicit_selection: true
+
+privacy:
+  persist_raw_discord_messages: false
+
+llm:
+  monthly_soft_limit_usd: 20.0
+  max_context_messages: 100
+  max_article_chars: 12000
+
+news:
+  retention_days: 90
+  max_items_per_digest: 40

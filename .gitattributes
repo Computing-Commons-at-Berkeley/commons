@@ -1,0 +1,14 @@
+# Normalize text files to LF so durable artifacts are byte-stable across
+# platforms (Windows bot host, Linux contributors and CI). See DECISIONS D006.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.pdf binary
+*.db binary
+*.sqlite binary
+*.sqlite3 binary
+*.whl binary
+*.zip binary

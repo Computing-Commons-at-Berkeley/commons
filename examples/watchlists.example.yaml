@@ -1,0 +1,11 @@
+repositories:
+  - repo: example/project
+    category: berkeley
+    reason: >
+      Relevant local ML systems project.
+    watch:
+      releases: true
+      issues: true
+    issue_labels:
+      - good first issue
+      - help wanted

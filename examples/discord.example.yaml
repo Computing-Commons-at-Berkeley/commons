@@ -1,0 +1,37 @@
+roles:
+  - admin
+  - member
+
+categories:
+  START:
+    channels:
+      - name: start-here
+        topic: "Read this first: what this community is and how it works."
+      - introductions
+
+  GENERAL:
+    channels:
+      - general
+
+  SIGNAL:
+    channels:
+      - ml-research
+      - infra
+      - econ-industry
+      - berkeley-local
+
+  BUILD:
+    channels:
+      - project-ideas
+      - build-log
+
+  COMMONS:
+    channels:
+      - resources
+      - digest
+
+  PRIVATE:
+    private: true
+    channels:
+      - ops
+      - bot-log

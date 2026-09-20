@@ -1,0 +1,15 @@
+sources:
+  - id: example-ml
+    type: rss
+    url: https://example.com/ml.xml
+    category: ml
+
+  - id: example-infra
+    type: rss
+    url: https://example.com/infra.xml
+    category: infra
+
+  - id: example-releases
+    type: github_release
+    url: https://github.com/example/project
+    category: infra
