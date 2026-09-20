@@ -78,3 +78,15 @@ Scheduling runs in-process (`commons/scheduler.py`); there is no separate servic
   `#digest` when `policy.digest.scheduled_weekly` is true
 
 Blocking work runs off the event loop, and one failing job never stops the loop.
+
+## Local UI
+
+The Streamlit UI is optional and runs on a developer machine:
+
+~~~bash
+pip install -e ".[ui]"
+streamlit run web/app.py
+~~~
+
+It is read-only and requires no authentication. v0.1 does not deploy it as a
+shared service (see V0.2_BACKLOG.md in the community repository).

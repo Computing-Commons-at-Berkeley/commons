@@ -43,6 +43,16 @@ The bot syncs its commands to `DISCORD_TEST_GUILD_ID` when that is set, so
 development commands appear immediately in the test guild without touching
 production.
 
+## Run the local UI (optional, read-only)
+
+~~~powershell
+.\.venv\Scripts\python -m pip install -e ".[ui]"
+streamlit run web/app.py
+~~~
+
+The UI reads the same Git Markdown and runtime SQLite state. It never writes, has
+no authentication, and the community does not depend on it.
+
 ## Bootstrap the Discord server
 
 ~~~powershell

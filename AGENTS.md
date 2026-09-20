@@ -39,7 +39,7 @@ src/commons/            importable package (module-first, no service boundaries)
 scripts/sync_discord.py CLI wrapper around commons.discord.sync
 tests/                  pytest suite
 docs/                   DEVELOPMENT.md, DEPLOYMENT.md, OPERATIONS.md
-web/                    (later) optional read-only Streamlit UI
+web/                    optional read-only Streamlit UI (never writes)
 ~~~
 
 ## Git practices (required)

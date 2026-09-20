@@ -51,6 +51,9 @@ this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Berkeley / OSS radar: curated `watchlists.yaml` activity (releases and selected
   issues) fetched from the GitHub API, tracked in SQLite `watch_state`, and
   included as the Berkeley / OSS Radar digest section (`commons/github/`).
+- Optional read-only local UI: Streamlit pages (Home, Feed, Projects, Berkeley,
+  Knowledge, Resources, Search) over the same Git and SQLite state, plus a
+  tested read-only data layer (`commons/web/`, `web/`).
 
 ### Changed
 
