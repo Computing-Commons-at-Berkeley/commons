@@ -230,6 +230,7 @@ class LLMPolicy(StrictModel):
 class NewsPolicy(StrictModel):
     retention_days: int = 90
     max_items_per_digest: int = 40
+    ingest_interval_minutes: int = 60
 
 
 class PolicyConfig(StrictModel):

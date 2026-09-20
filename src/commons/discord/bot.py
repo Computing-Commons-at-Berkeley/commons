@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
+import contextlib
+from datetime import timedelta
 
 import discord
 
@@ -15,6 +18,8 @@ from commons.discord.project import ProjectService
 from commons.errors import CommonsError
 from commons.llm import LLMClient, UsageLog
 from commons.logging import get_logger, setup_logging
+from commons.news.run import run_ingestion
+from commons.scheduler import Scheduler
 from commons.settings import Settings, load_settings
 
 log = get_logger("commons.discord.bot")
@@ -49,6 +54,8 @@ class CommonsBot(discord.Client):
             llm,
             max_article_chars=policy.llm.max_article_chars,
         )
+        self.scheduler = build_scheduler(settings, policy)
+        self._scheduler_task: asyncio.Task[None] | None = None
 
     async def setup_hook(self) -> None:
         register_commands(self)
@@ -61,9 +68,30 @@ class CommonsBot(discord.Client):
         else:
             await self.tree.sync()
             log.info("synced global application commands")
+        self._scheduler_task = asyncio.create_task(self.scheduler.serve())
+
+    async def close(self) -> None:
+        if self._scheduler_task is not None:
+            self._scheduler_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._scheduler_task
+            self._scheduler_task = None
+        await super().close()
 
     async def on_ready(self) -> None:
         log.info("bot online as %s", self.user)
+
+
+def build_scheduler(settings: Settings, policy: PolicyConfig) -> Scheduler:
+    """In-process jobs. v0.1 does not run a separate scheduler service."""
+
+    scheduler = Scheduler()
+    scheduler.add(
+        "news-ingestion",
+        timedelta(minutes=policy.news.ingest_interval_minutes),
+        lambda: run_ingestion(settings),
+    )
+    return scheduler
 
 
 def build_services(settings: Settings) -> tuple[CommunityRepo, LLMClient, PolicyConfig]:
