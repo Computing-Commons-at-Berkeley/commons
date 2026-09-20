@@ -77,7 +77,9 @@ The script is non-destructive: objects that exist in Discord but not in
 8. Invoke Archive again on the same source and confirm it reports the existing
    artifact instead of duplicating it.
 9. Break the remote (point `origin` at a bad path) and confirm Archive reports a
-   clear failure and does not claim success.
+   clear failure and does not claim success. Restore the correct remote before
+   continuing; later steps must not run against a broken remote. The retry keeps
+   failing until the pending commit is pushed or reset explicitly.
 10. Run `/project name:"<a real idea>" goal:"<one line>"` and confirm the bot
     replies with an artifact path and that `data/projects/<slug>.md` exists.
 11. Run `/project` again with the same name, or from inside the same thread, and

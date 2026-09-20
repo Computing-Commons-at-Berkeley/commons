@@ -19,6 +19,7 @@ llm:
   monthly_soft_limit_usd: 20.0
   max_context_messages: 100
   max_article_chars: 12000
+  on_limit: warn
 
 news:
   retention_days: 90

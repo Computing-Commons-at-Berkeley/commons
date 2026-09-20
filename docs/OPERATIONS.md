@@ -49,12 +49,25 @@ Recovery:
 A stale lock file can be removed if no bot process is running. Stale locks are
 also detected and cleared automatically after the lock timeout.
 
+## Operational notifications
+
+Startup, durable-write failures and LLM budget warnings are posted to `#bot-log`.
+Only meaningful events are sent; routine news fetches are not.
+
 ## LLM budget
 
 Usage is appended to `RUNTIME_DIR/llm_usage.jsonl` with token counts and an
 estimated cost. When the monthly soft limit in `config/policy.yaml` is reached
-the bot logs a warning. The limit detects implementation bugs; it is not a
-billing system.
+the bot logs a warning and posts an operational notice to `#bot-log`.
+`llm.on_limit: warn` (default) keeps calling; `llm.on_limit: block` refuses
+further calls until the month rolls over. Models not in the built-in price table
+are estimated at zero unless `LLM_INPUT_PRICE_PER_MTOK` / `LLM_OUTPUT_PRICE_PER_MTOK`
+are set. The limit detects implementation bugs; it is not a billing system.
+
+## News retention
+
+`news.retention_days` prunes the news SQLite database daily; Git never stores the
+news corpus.
 
 ## Token rotation
 

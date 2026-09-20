@@ -150,3 +150,14 @@ def set_watch_state(
         (repo, last_checked_at, state_json),
     )
     connection.commit()
+
+
+def prune_news(connection: sqlite3.Connection, cutoff_iso: str) -> int:
+    """Delete items older than the retention cutoff. Returns rows removed."""
+
+    cursor = connection.execute(
+        "DELETE FROM news_items WHERE COALESCE(published_at, fetched_at) < ?",
+        (cutoff_iso,),
+    )
+    connection.commit()
+    return int(cursor.rowcount or 0)

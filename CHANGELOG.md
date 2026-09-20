@@ -60,3 +60,24 @@ this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Durable artifact writes force LF line endings and `.gitattributes` normalizes
   text files to LF, so artifacts are byte-stable across platforms (see
   `community/docs/DECISIONS.md` D006).
+
+### Fixed
+
+- Addressed the 2026-09-19 review findings: archive authorization checks guild,
+  member policy, source and bot visibility before any read (R01); artifact paths
+  are chosen inside the repository lock (R02); an unexpected dirty index stops the
+  write and only the intended artifact is committed (R03); a failed push keeps the
+  pending state visible until explicit recovery (R04); scheduled work runs off the
+  event loop (R05); the scheduler is ready-gated with prompt retry and persisted
+  due times (R06); digest content - not just a table of contents - is delivered to
+  Discord (R07); one effective guild is used everywhere (R08); lock acquisition
+  honors its deadline and Git subprocesses are bounded (R09); the selected message
+  and its parent are always kept (R10); bootstrap honors privacy and reports
+  permission differences (R11); tests are independent of the Git default branch
+  (R12); blank optional environment values mean unset (R13); every digest source
+  class keeps budget (R14).
+- Operational: `#bot-log` notifications for startup, durable-write failures and
+  budget warnings; `llm.on_limit` chooses warn or block; explicit LLM pricing
+  overrides; daily news retention pruning; rejecting
+  `privacy.persist_raw_discord_messages: true` because raw persistence is not
+  implemented.

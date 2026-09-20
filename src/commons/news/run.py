@@ -6,6 +6,8 @@ settings and YAML loading live outside the ingestion code.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import httpx
 
 from commons.config import load_sources_config
@@ -42,3 +44,23 @@ def run_ingestion(
     errors = [result.source_id for result in results if result.error]
     log.info("news ingestion: %d item(s) inserted, %d source(s) errored", inserted, len(errors))
     return results
+
+
+def prune_news_items(
+    settings: Settings,
+    retention_days: int,
+    *,
+    now: datetime | None = None,
+) -> int:
+    """Apply the configured news retention window (R: unused setting wired)."""
+
+    cutoff = (now or datetime.now(UTC)) - timedelta(days=retention_days)
+    connection = db.connect(settings.news_db_path)
+    try:
+        db.init_db(connection)
+        removed = db.prune_news(connection, cutoff.isoformat())
+    finally:
+        connection.close()
+    if removed:
+        log.info("news retention removed %d item(s)", removed)
+    return removed

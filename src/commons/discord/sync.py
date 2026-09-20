@@ -3,6 +3,10 @@
 The script creates missing roles, categories and channels. It NEVER deletes
 objects that exist in Discord but not in the config; it reports them instead.
 There is no /sync command and no reconciliation daemon.
+
+Privacy is honoured (review R11): private categories and channels deny the
+default role explicitly and grant the configured admin role and the bot access,
+and existing objects whose privacy differs are reported for human review.
 """
 
 from __future__ import annotations
@@ -18,12 +22,16 @@ from commons.settings import load_settings
 
 log = get_logger("commons.discord.sync")
 
+ADMIN_ROLE_NAME = "admin"
+
 
 @dataclass(frozen=True)
 class GuildState:
     roles: set[str] = field(default_factory=set)
     categories: set[str] = field(default_factory=set)
     channels: set[str] = field(default_factory=set)
+    private_categories: set[str] = field(default_factory=set)
+    private_channels: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -34,6 +42,7 @@ class SyncPlan:
     unknown_roles: list[str] = field(default_factory=list)
     unknown_categories: list[str] = field(default_factory=list)
     unknown_channels: list[str] = field(default_factory=list)
+    permission_differences: list[str] = field(default_factory=list)
 
     @property
     def is_empty(self) -> bool:
@@ -51,16 +60,42 @@ class SyncPlan:
             f"unknown category (kept, not deleted): {name}" for name in self.unknown_categories
         ]
         lines += [f"unknown channel (kept, not deleted): #{name}" for name in self.unknown_channels]
+        lines += [
+            f"permission difference (not changed): {note}" for note in self.permission_differences
+        ]
         return lines
+
+
+def _is_private(target: discord.abc.GuildChannel) -> bool:
+    overwrite = target.overwrites_for(target.guild.default_role)
+    return overwrite.view_channel is False
+
+
+def _private_overwrites(guild: discord.Guild) -> dict[object, discord.PermissionOverwrite]:
+    overwrites: dict[object, discord.PermissionOverwrite] = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False)
+    }
+    admin = discord.utils.get(guild.roles, name=ADMIN_ROLE_NAME)
+    if admin is not None:
+        overwrites[admin] = discord.PermissionOverwrite(view_channel=True)
+    if guild.me is not None:
+        overwrites[guild.me] = discord.PermissionOverwrite(view_channel=True)
+    return overwrites
 
 
 def guild_state_from_names(
     roles: set[str] | None = None,
     categories: set[str] | None = None,
     channels: set[str] | None = None,
+    private_categories: set[str] | None = None,
+    private_channels: set[str] | None = None,
 ) -> GuildState:
     return GuildState(
-        roles=roles or set(), categories=categories or set(), channels=channels or set()
+        roles=roles or set(),
+        categories=categories or set(),
+        channels=channels or set(),
+        private_categories=private_categories or set(),
+        private_channels=private_channels or set(),
     )
 
 
@@ -72,6 +107,14 @@ def guild_state(guild: discord.Guild) -> GuildState:
             channel.name
             for channel in guild.channels
             if not isinstance(channel, discord.CategoryChannel)
+        },
+        private_categories={
+            category.name for category in guild.categories if _is_private(category)
+        },
+        private_channels={
+            channel.name
+            for channel in guild.channels
+            if not isinstance(channel, discord.CategoryChannel) and _is_private(channel)
         },
     )
 
@@ -93,9 +136,19 @@ def plan_sync(existing: GuildState, desired: DiscordConfig) -> SyncPlan:
         unknown_channels=sorted(existing.channels - desired_channels),
     )
     for category, spec in desired.categories.items():
+        if (
+            spec.private
+            and category in existing.categories
+            and category not in existing.private_categories
+        ):
+            plan.permission_differences.append(f"category {category} is not private in Discord")
         for channel in spec.channels:
             if channel.name not in existing.channels:
                 plan.create_channels.append((category, channel.name))
+            elif channel.private and channel.name not in existing.private_channels:
+                plan.permission_differences.append(
+                    f"channel #{channel.name} is not private in Discord"
+                )
     return plan
 
 
@@ -105,30 +158,44 @@ async def apply_sync(guild: discord.Guild, config: DiscordConfig, plan: SyncPlan
     for name in plan.create_roles:
         spec = next(role for role in config.roles if role.name == name)
         colour = discord.Colour.from_str(spec.color) if spec.color else discord.Colour.default()
-        await guild.create_role(
-            name=spec.name, colour=colour, hoist=spec.hoist, reason="sync_discord"
+        permissions = (
+            discord.Permissions(administrator=True)
+            if spec.administrator
+            else discord.Permissions.none()
         )
-        log.info("created role %s", spec.name)
+        await guild.create_role(
+            name=spec.name,
+            colour=colour,
+            hoist=spec.hoist,
+            permissions=permissions,
+            reason="sync_discord",
+        )
+        log.info("created role %s (administrator=%s)", spec.name, spec.administrator)
 
     for category_name, spec in config.categories.items():
         category = discord.utils.get(guild.categories, name=category_name)
         if category is None:
-            overwrites = (
-                {guild.default_role: discord.PermissionOverwrite(view_channel=False)}
-                if spec.private
-                else None
-            )
+            overwrites = _private_overwrites(guild) if spec.private else None
             category = await guild.create_category(
                 category_name, overwrites=overwrites, reason="sync_discord"
             )
-            log.info("created category %s", category_name)
+            log.info("created category %s (private=%s)", category_name, spec.private)
         for channel in spec.channels:
             if discord.utils.get(category.channels, name=channel.name) is not None:
                 continue
+            overwrites = _private_overwrites(guild) if channel.private else None
             await category.create_text_channel(
-                channel.name, topic=channel.topic, reason="sync_discord"
+                channel.name,
+                topic=channel.topic,
+                overwrites=overwrites,
+                reason="sync_discord",
             )
-            log.info("created channel #%s in %s", channel.name, category_name)
+            log.info(
+                "created channel #%s in %s (private=%s)",
+                channel.name,
+                category_name,
+                channel.private,
+            )
 
 
 async def sync_guild(

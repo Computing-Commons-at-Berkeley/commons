@@ -101,3 +101,24 @@ def test_load_community_config_bundle(tmp_path: Path) -> None:
     bundle = load_community_config(tmp_path)
     assert bundle.discord.roles[0].name == "admin"
     assert bundle.policy.archive.allow_members is True
+
+
+def test_raw_discord_persistence_is_rejected(tmp_path: Path) -> None:
+    path = tmp_path / "policy.yaml"
+    path.write_text("privacy:\n  persist_raw_discord_messages: true\n", encoding="utf-8")
+    with pytest.raises(ConfigError):
+        load_policy_config(path)
+
+
+def test_llm_on_limit_accepts_warn_and_block(tmp_path: Path) -> None:
+    for value in ("warn", "block"):
+        path = tmp_path / f"policy-{value}.yaml"
+        path.write_text(f"llm:\n  on_limit: {value}\n", encoding="utf-8")
+        assert load_policy_config(path).llm.on_limit == value
+
+
+def test_llm_on_limit_rejects_unknown_value(tmp_path: Path) -> None:
+    path = tmp_path / "policy.yaml"
+    path.write_text("llm:\n  on_limit: explode\n", encoding="utf-8")
+    with pytest.raises(ConfigError):
+        load_policy_config(path)

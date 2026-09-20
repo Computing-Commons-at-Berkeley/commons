@@ -49,4 +49,4 @@ def test_scheduler_registers_ingestion_job(tmp_path: Path) -> None:
         runtime_dir=tmp_path / "runtime",
     )
     scheduler = build_scheduler(settings, PolicyConfig())
-    assert [job.name for job in scheduler.jobs] == ["news-ingestion"]
+    assert {job.name for job in scheduler.jobs} == {"news-ingestion", "news-cleanup"}

@@ -60,6 +60,7 @@ class RoleSpec(StrictModel):
     name: str
     color: str | None = None
     hoist: bool = False
+    administrator: bool = False
 
     @model_validator(mode="before")
     @classmethod
@@ -220,11 +221,20 @@ class ArchivePolicy(StrictModel):
 class PrivacyPolicy(StrictModel):
     persist_raw_discord_messages: bool = False
 
+    @model_validator(mode="after")
+    def _raw_persistence_not_implemented(self) -> PrivacyPolicy:
+        if self.persist_raw_discord_messages:
+            raise ValueError(
+                "privacy.persist_raw_discord_messages is not implemented in v0.1; leave it false"
+            )
+        return self
+
 
 class LLMPolicy(StrictModel):
     monthly_soft_limit_usd: float = 0.0
     max_context_messages: int = 100
     max_article_chars: int = 12000
+    on_limit: Literal["warn", "block"] = "warn"
 
 
 class NewsPolicy(StrictModel):

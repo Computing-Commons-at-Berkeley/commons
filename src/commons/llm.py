@@ -8,6 +8,7 @@ estimated cost, and a monthly soft budget can be checked before spending.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -44,8 +45,17 @@ class LLMUsage:
         return asdict(self)
 
 
-def estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
-    input_price, output_price = MODEL_PRICES.get(model, (0.0, 0.0))
+def estimate_cost(
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    *,
+    input_price_per_mtok: float | None = None,
+    output_price_per_mtok: float | None = None,
+) -> float:
+    known_input, known_output = MODEL_PRICES.get(model, (0.0, 0.0))
+    input_price = input_price_per_mtok if input_price_per_mtok is not None else known_input
+    output_price = output_price_per_mtok if output_price_per_mtok is not None else known_output
     return (input_tokens / 1_000_000) * input_price + (output_tokens / 1_000_000) * output_price
 
 
@@ -129,6 +139,10 @@ class LLMClient:
         timeout: float = 60.0,
         transport: httpx.BaseTransport | None = None,
         monthly_soft_limit_usd: float = 0.0,
+        budget_action: str = "warn",
+        input_price_per_mtok: float | None = None,
+        output_price_per_mtok: float | None = None,
+        on_warning: Callable[[str], None] | None = None,
     ) -> None:
         self.api_key = api_key
         self.model = model
@@ -137,17 +151,29 @@ class LLMClient:
         self.timeout = timeout
         self._transport = transport
         self.monthly_soft_limit_usd = monthly_soft_limit_usd
+        self.budget_action = budget_action if budget_action in {"warn", "block"} else "warn"
+        self.input_price_per_mtok = input_price_per_mtok
+        self.output_price_per_mtok = output_price_per_mtok
+        self.on_warning = on_warning
 
     def _check_budget(self) -> None:
         if self.usage_log is None or self.monthly_soft_limit_usd <= 0:
             return
         spent = self.usage_log.monthly_spend_usd()
-        if spent >= self.monthly_soft_limit_usd:
-            log.warning(
-                "LLM monthly soft limit reached: spent %.4f of %.4f USD",
-                spent,
-                self.monthly_soft_limit_usd,
-            )
+        if spent < self.monthly_soft_limit_usd:
+            return
+        message = (
+            f"LLM monthly soft limit reached: spent {spent:.4f} of "
+            f"{self.monthly_soft_limit_usd:.4f} USD"
+        )
+        log.warning("%s", message)
+        if self.on_warning is not None:
+            try:
+                self.on_warning(message)
+            except Exception:  # noqa: BLE001 - a notification must not break the call
+                log.warning("LLM budget warning callback failed")
+        if self.budget_action == "block":
+            raise LLMError(f"{message}; refusing further calls by policy (llm.on_limit=block)")
 
     def _post(self, payload: dict[str, Any]) -> dict[str, Any]:
         url = f"{self.base_url}/chat/completions"
@@ -208,7 +234,13 @@ class LLMClient:
             model=self.model,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
-            estimated_cost_usd=estimate_cost(self.model, input_tokens, output_tokens),
+            estimated_cost_usd=estimate_cost(
+                self.model,
+                input_tokens,
+                output_tokens,
+                input_price_per_mtok=self.input_price_per_mtok,
+                output_price_per_mtok=self.output_price_per_mtok,
+            ),
             created_at=datetime.now(UTC).isoformat(),
         )
         if self.usage_log is not None:

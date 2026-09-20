@@ -1,5 +1,6 @@
 roles:
-  - admin
+  - name: admin
+    administrator: true
   - member
 
 categories:

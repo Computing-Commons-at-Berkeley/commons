@@ -16,6 +16,8 @@ are no microservices.
 | `LLM_API_KEY` | yes | LLM provider key |
 | `LLM_MODEL` | yes | Model name |
 | `LLM_BASE_URL` | no | OpenAI-compatible endpoint |
+| `LLM_INPUT_PRICE_PER_MTOK` | no | Explicit input USD/1M tokens for an unlisted model |
+| `LLM_OUTPUT_PRICE_PER_MTOK` | no | Explicit output USD/1M tokens for an unlisted model |
 | `RUNTIME_DIR` | recommended | Rebuildable state (defaults to `runtime/`); must be outside every Git repository |
 | `LOG_LEVEL` | no | Defaults to `INFO` |
 

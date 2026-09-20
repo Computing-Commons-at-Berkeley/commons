@@ -25,6 +25,7 @@ from commons.digest import (
 )
 from commons.discord.archive import ArchiveOutcome, ArchiveRequest, TranscriptMessage
 from commons.discord.digest import DigestOutcome, DigestRequest, render_digest_text
+from commons.discord.notify import notify_bot_log
 from commons.discord.project import ProjectCreateRequest, ProjectOutcome
 from commons.errors import ArchiveError, CommonsError, DigestError, GitError, LLMError, ProjectError
 from commons.github.run import collect_radar_from_settings
@@ -257,10 +258,12 @@ async def _run_archive(
         outcome = await interaction.client.loop.run_in_executor(None, service.archive, request)
     except (ArchiveError, LLMError, GitError) as exc:
         log.error("archive failed: %s", exc)
+        await notify_bot_log(interaction.client, f"Archive failed: {exc}")
         await interaction.followup.send(f"Archive failed: {exc}")
         return
     except Exception as exc:  # noqa: BLE001 - never claim success on an unknown failure
         log.exception("archive failed unexpectedly")
+        await notify_bot_log(interaction.client, f"Archive failed unexpectedly: {exc}")
         await interaction.followup.send(f"Archive failed unexpectedly: {exc}")
         return
 
@@ -325,10 +328,12 @@ async def _run_project(
         outcome = await interaction.client.loop.run_in_executor(None, service.create, request)
     except (ProjectError, GitError) as exc:
         log.error("project creation failed: %s", exc)
+        await notify_bot_log(interaction.client, f"Project creation failed: {exc}")
         await interaction.followup.send(f"Project creation failed: {exc}")
         return
     except Exception as exc:  # noqa: BLE001 - never claim success on an unknown failure
         log.exception("project creation failed unexpectedly")
+        await notify_bot_log(interaction.client, f"Project creation failed unexpectedly: {exc}")
         await interaction.followup.send(f"Project creation failed unexpectedly: {exc}")
         return
 
@@ -519,10 +524,12 @@ async def _run_digest(
         outcome = await interaction.client.loop.run_in_executor(None, service.generate, request)
     except (DigestError, LLMError, GitError) as exc:
         log.error("digest failed: %s", exc)
+        await notify_bot_log(interaction.client, f"Digest failed: {exc}")
         await interaction.followup.send(f"Digest failed: {exc}")
         return
     except Exception as exc:  # noqa: BLE001 - never claim success on an unknown failure
         log.exception("digest failed unexpectedly")
+        await notify_bot_log(interaction.client, f"Digest failed unexpectedly: {exc}")
         await interaction.followup.send(f"Digest failed unexpectedly: {exc}")
         return
 
