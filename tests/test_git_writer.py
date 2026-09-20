@@ -117,3 +117,24 @@ def test_non_repo_is_rejected(tmp_path: Path) -> None:
     repo = CommunityRepo(path, lock_path=tmp_path / "lock")
     with pytest.raises(GitError):
         repo.write_artifact("data/knowledge/a.md", "x", commit_message="archive: add a")
+
+
+def test_pull_rebase_aborts_a_failed_rebase(tmp_path: Path) -> None:
+    class PullFailRepo(CommunityRepo):
+        def __init__(self, path: Path, **kwargs) -> None:
+            super().__init__(path, **kwargs)
+            self.commands: list[tuple[str, ...]] = []
+
+        def _git(self, *args: str, check: bool = False) -> CommandResult:
+            self.commands.append(args)
+            if args[:2] == ("rev-parse", "--abbrev-ref"):
+                return CommandResult(0, "main", "")
+            if args and args[0] == "pull":
+                return CommandResult(1, "", "conflict")
+            return CommandResult(0, "", "")
+
+    repo = PullFailRepo(tmp_path / "community", lock_path=None)
+    result = repo.pull_rebase()
+
+    assert result.ok is False
+    assert ("rebase", "--abort") in repo.commands
