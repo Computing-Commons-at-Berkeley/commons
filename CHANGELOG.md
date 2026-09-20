@@ -42,6 +42,8 @@ this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - News pipeline foundation: SQLite runtime schema (`sources`, `news_items`,
   `watch_state`, `llm_usage`), deterministic URL canonicalization and dedup, RSS
   and GitHub-release ingestion, and 24h/7d/30d temporal queries (`commons/news/`).
+- In-process scheduling: news ingestion runs on the configured interval as part of
+  the single runtime (`commons/scheduler.py`, `commons/news/run.py`).
 
 ### Changed
 
