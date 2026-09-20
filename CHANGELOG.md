@@ -30,6 +30,11 @@ this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   channels and never deletes unknown objects (`commons/discord/sync.py`,
   `scripts/sync_discord.py`).
 - `AGENTS.md` with repository and Git practices.
+- `/project` workflow and command: idempotent project records at
+  `data/projects/<slug>.md` with status changes
+  (`commons/discord/project.py`, `commons/community_repo/projects.py`).
+- Shared Markdown/frontmatter helpers for durable artifacts
+  (`commons/community_repo/markdown.py`).
 
 ### Changed
 

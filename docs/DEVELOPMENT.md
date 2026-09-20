@@ -57,8 +57,8 @@ The script is non-destructive: objects that exist in Discord but not in
 
 1. Create or reuse a private test guild and invite the bot.
 2. Run `scripts/sync_discord.py --dry-run`, then run it for real.
-3. Start the bot and confirm the `Archive` message context action and `/archive`
-   appear.
+3. Start the bot and confirm the `Archive` message context action and the
+   `/archive` and `/project` commands appear.
 4. Post a short multi-message thread.
 5. Right-click the thread's first message, choose Apps, then Archive.
 6. Confirm the bot replies with a title and artifact path.
@@ -68,6 +68,10 @@ The script is non-destructive: objects that exist in Discord but not in
    artifact instead of duplicating it.
 9. Break the remote (point `origin` at a bad path) and confirm Archive reports a
    clear failure and does not claim success.
+10. Run `/project name:"<a real idea>" goal:"<one line>"` and confirm the bot
+    replies with an artifact path and that `data/projects/<slug>.md` exists.
+11. Run `/project` again with the same name, or from inside the same thread, and
+    confirm it returns the existing record instead of creating a second one.
 
 ## Layout
 
