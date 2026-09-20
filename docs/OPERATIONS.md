@@ -20,7 +20,7 @@ conversation.
 
 ## Runtime state locations
 
-- News database: `RUNTIME_DIR/news.db` (created at the news milestone)
+- News database: `RUNTIME_DIR/news.db` (created by the news pipeline)
 - Cache: `RUNTIME_DIR/cache/`
 - LLM usage: `RUNTIME_DIR/llm_usage.jsonl`
 - Write lock: `RUNTIME_DIR/community_repo.lock`
