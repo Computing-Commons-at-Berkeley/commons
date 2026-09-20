@@ -72,11 +72,21 @@ class ProjectCandidate:
     relative_path: str | None = None
 
 
+@dataclass(frozen=True)
+class RadarCandidate:
+    repo: str
+    title: str
+    url: str
+    kind: str = "issue"
+    labels: list[str] = field(default_factory=list)
+
+
 def build_candidate_text(
     activity: list[ChannelActivity],
     *,
     news: list[NewsCandidate] | None = None,
     projects: list[ProjectCandidate] | None = None,
+    radar: list[RadarCandidate] | None = None,
     max_chars: int = 12000,
     max_per_channel: int = 40,
     max_news: int = 40,
@@ -106,6 +116,13 @@ def build_candidate_text(
     if projects:
         lines = [f"- {project.title} (status: {project.status})" for project in projects]
         blocks.append("## Projects\n" + "\n".join(lines))
+
+    if radar:
+        lines = []
+        for entry in radar:
+            labels = f" (labels: {', '.join(entry.labels)})" if entry.labels else ""
+            lines.append(f"- {entry.repo} [{entry.kind}] {entry.title}{labels} - {entry.url}")
+        blocks.append("## OSS Radar\n" + "\n".join(lines))
 
     text = "\n\n".join(blocks)
     if len(text) > max_chars:

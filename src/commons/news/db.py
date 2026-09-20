@@ -126,3 +126,27 @@ def record_source_fetch(
             (now, etag, last_modified, source_id),
         )
     connection.commit()
+
+
+def get_watch_state(connection: sqlite3.Connection, repo: str) -> sqlite3.Row | None:
+    return connection.execute("SELECT * FROM watch_state WHERE repo = ?", (repo,)).fetchone()
+
+
+def set_watch_state(
+    connection: sqlite3.Connection,
+    repo: str,
+    *,
+    last_checked_at: str,
+    state_json: str | None = None,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO watch_state (repo, last_checked_at, state_json)
+        VALUES (?, ?, ?)
+        ON CONFLICT(repo) DO UPDATE SET
+            last_checked_at = excluded.last_checked_at,
+            state_json = excluded.state_json
+        """,
+        (repo, last_checked_at, state_json),
+    )
+    connection.commit()

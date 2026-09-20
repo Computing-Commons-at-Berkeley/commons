@@ -25,6 +25,7 @@ from commons.digest import (
     DigestPeriod,
     NewsCandidate,
     ProjectCandidate,
+    RadarCandidate,
     build_candidate_text,
     generate_digest,
 )
@@ -37,6 +38,7 @@ class DigestRequest:
     period: str = "7d"
     activity: list[ChannelActivity] = field(default_factory=list)
     news: list[NewsCandidate] = field(default_factory=list)
+    radar: list[RadarCandidate] = field(default_factory=list)
     projects: list[ProjectCandidate] | None = None
     category: str | None = None
     requested_by: str = "unknown"
@@ -84,6 +86,7 @@ class DigestService:
             request.activity,
             news=request.news,
             projects=projects,
+            radar=request.radar,
             max_chars=self.max_article_chars,
             max_per_channel=self.max_per_channel,
         )

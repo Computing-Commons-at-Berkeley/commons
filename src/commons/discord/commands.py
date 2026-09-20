@@ -9,14 +9,22 @@ from __future__ import annotations
 from datetime import UTC
 
 import discord
+import httpx
 from discord import app_commands
 
 from commons.community_repo.schemas import DiscordSource
-from commons.digest import ChannelActivity, DigestMessage, DigestPeriod, NewsCandidate
+from commons.digest import (
+    ChannelActivity,
+    DigestMessage,
+    DigestPeriod,
+    NewsCandidate,
+    RadarCandidate,
+)
 from commons.discord.archive import ArchiveOutcome, ArchiveRequest, TranscriptMessage
 from commons.discord.digest import DigestOutcome, DigestRequest
 from commons.discord.project import ProjectCreateRequest, ProjectOutcome
-from commons.errors import ArchiveError, DigestError, GitError, LLMError, ProjectError
+from commons.errors import ArchiveError, CommonsError, DigestError, GitError, LLMError, ProjectError
+from commons.github.run import collect_radar_from_settings
 from commons.logging import get_logger
 from commons.news import db as news_db
 from commons.news.query import items_since
@@ -260,6 +268,35 @@ def news_candidates_for(
     ]
 
 
+def radar_candidates_for(
+    settings: Settings,
+    period: DigestPeriod,
+    *,
+    transport: httpx.BaseTransport | None = None,
+) -> list[RadarCandidate]:
+    """Collect curated GitHub/OSS watchlist activity for the period.
+
+    A missing watchlist or a GitHub API problem degrades the digest; it never
+    blocks it.
+    """
+
+    try:
+        items = collect_radar_from_settings(settings, since=period.start, transport=transport)
+    except CommonsError as exc:
+        log.warning("radar collection skipped: %s", exc)
+        return []
+    return [
+        RadarCandidate(
+            repo=item.repo,
+            title=item.title,
+            url=item.url,
+            kind=item.kind,
+            labels=item.labels,
+        )
+        for item in items
+    ]
+
+
 async def _run_digest(
     interaction: discord.Interaction,
     *,
@@ -283,10 +320,12 @@ async def _run_digest(
         )
         settings = getattr(interaction.client, "settings", None)
         news = news_candidates_for(settings, period) if settings is not None else []
+        radar = radar_candidates_for(settings, period) if settings is not None else []
         request = DigestRequest(
             period=period_label,
             activity=activity,
             news=news,
+            radar=radar,
             category=category,
             requested_by=interaction.user.display_name,
         )

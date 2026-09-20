@@ -17,6 +17,7 @@ from commons.discord.commands import (
     collect_activity,
     digest_embed,
     news_candidates_for,
+    radar_candidates_for,
     register_commands,
 )
 from commons.discord.digest import DigestRequest, DigestService
@@ -106,6 +107,7 @@ class CommonsBot(discord.Client):
                 period="7d",
                 activity=activity,
                 news=news_candidates_for(self.settings, period),
+                radar=radar_candidates_for(self.settings, period),
                 requested_by="scheduler",
             )
             outcome = await asyncio.to_thread(self.digest_service.generate, request)
