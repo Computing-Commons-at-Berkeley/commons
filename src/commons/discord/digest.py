@@ -19,7 +19,7 @@ from commons.community_repo.digests import (
 )
 from commons.community_repo.git import CommunityRepo
 from commons.community_repo.projects import list_projects
-from commons.community_repo.schemas import DigestArtifact
+from commons.community_repo.schemas import DigestArtifact, DigestSection
 from commons.digest import (
     ChannelActivity,
     DigestPeriod,
@@ -50,7 +50,18 @@ class DigestOutcome:
     relative_path: str
     section_headings: list[str]
     commit_sha: str | None
+    sections: list[DigestSection] = field(default_factory=list)
     detail: str = ""
+
+
+def render_digest_text(outcome: DigestOutcome) -> str:
+    """Render the synthesized digest for Discord delivery (R07)."""
+
+    parts = [f"Digest ({outcome.period})"]
+    for section in outcome.sections:
+        parts.append(f"## {section.heading}")
+        parts.append(section.body)
+    return "\n\n".join(parts)
 
 
 class DigestService:
@@ -63,11 +74,13 @@ class DigestService:
         *,
         max_article_chars: int = 12000,
         max_per_channel: int = 40,
+        max_news: int = 40,
     ) -> None:
         self.repo = repo
         self.llm = llm
         self.max_article_chars = max_article_chars
         self.max_per_channel = max_per_channel
+        self.max_news = max_news
 
     @property
     def data_root(self) -> Path:
@@ -75,7 +88,12 @@ class DigestService:
 
     def current_projects(self) -> list[ProjectCandidate]:
         return [
-            ProjectCandidate(title=project.title, status=project.status)
+            ProjectCandidate(
+                title=project.title,
+                status=project.status,
+                goal=project.goal,
+                current_state=project.current_state,
+            )
             for project in list_projects(self.data_root)
         ]
 
@@ -89,6 +107,7 @@ class DigestService:
             radar=request.radar,
             max_chars=self.max_article_chars,
             max_per_channel=self.max_per_channel,
+            max_news=self.max_news,
         )
         if not candidate_text.strip():
             raise DigestError("no candidate material to summarize for this period")
@@ -117,5 +136,6 @@ class DigestService:
             relative_path=relative_path,
             section_headings=[section.heading for section in sections],
             commit_sha=result.commit_sha,
+            sections=list(sections),
             detail=result.detail,
         )

@@ -69,6 +69,8 @@ class NewsCandidate:
 class ProjectCandidate:
     title: str
     status: str
+    goal: str = ""
+    current_state: str = ""
     relative_path: str | None = None
 
 
@@ -79,6 +81,33 @@ class RadarCandidate:
     url: str
     kind: str = "issue"
     labels: list[str] = field(default_factory=list)
+
+
+def _fit_blocks(blocks: list[str], max_chars: int) -> str:
+    """Bound the whole candidate text while giving every source a share (R14).
+
+    Truncating the concatenation would let an early Discord block consume the
+    entire budget and drop news, projects or radar entirely. Each block is
+    trimmed to an equal share first, so no source class disappears because
+    another was verbose.
+    """
+
+    if not blocks:
+        return ""
+    if sum(len(block) for block in blocks) <= max_chars:
+        return "\n\n".join(blocks)
+
+    share = max(200, max_chars // len(blocks))
+    trimmed: list[str] = []
+    for block in blocks:
+        if len(block) <= share:
+            trimmed.append(block)
+        else:
+            trimmed.append(block[:share].rstrip() + "\n[truncated]")
+    text = "\n\n".join(trimmed)
+    if len(text) > max_chars:
+        text = text[:max_chars] + "\n\n[candidates truncated]"
+    return text
 
 
 def build_candidate_text(
@@ -102,7 +131,8 @@ def build_candidate_text(
             if not content:
                 continue
             stamp = f" ({message.created_at})" if message.created_at else ""
-            lines.append(f"{message.author}{stamp}: {content}")
+            link = f" [link]({message.jump_url})" if message.jump_url else ""
+            lines.append(f"{message.author}{stamp}: {content}{link}")
         if lines:
             blocks.append(f"## #{group.channel}\n" + "\n".join(lines))
 
@@ -114,7 +144,11 @@ def build_candidate_text(
         blocks.append(f"## News: {category}\n" + "\n".join(lines))
 
     if projects:
-        lines = [f"- {project.title} (status: {project.status})" for project in projects]
+        lines = []
+        for project in projects:
+            detail = project.goal or project.current_state
+            suffix = f" - {detail}" if detail else ""
+            lines.append(f"- {project.title} (status: {project.status}){suffix}")
         blocks.append("## Projects\n" + "\n".join(lines))
 
     if radar:
@@ -124,10 +158,7 @@ def build_candidate_text(
             lines.append(f"- {entry.repo} [{entry.kind}] {entry.title}{labels} - {entry.url}")
         blocks.append("## OSS Radar\n" + "\n".join(lines))
 
-    text = "\n\n".join(blocks)
-    if len(text) > max_chars:
-        text = text[:max_chars] + "\n\n[candidates truncated]"
-    return text
+    return _fit_blocks(blocks, max_chars)
 
 
 def generate_digest(

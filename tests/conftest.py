@@ -46,7 +46,10 @@ def _init_repo(path: Path) -> None:
 def repo_with_remote(tmp_path: Path) -> RepoFixture:
     remote = tmp_path / "remote.git"
     subprocess.run(
-        ["git", "init", "--bare", str(remote)], check=True, capture_output=True, text=True
+        ["git", "init", "--bare", "-b", "main", str(remote)],
+        check=True,
+        capture_output=True,
+        text=True,
     )
     path = tmp_path / "community"
     _init_repo(path)
@@ -66,7 +69,9 @@ def _probe_local_push(base: Path) -> bool:
     work = base / "work"
     if (
         subprocess.run(
-            ["git", "init", "--bare", str(remote)], capture_output=True, text=True
+            ["git", "init", "--bare", "-b", "main", str(remote)],
+            capture_output=True,
+            text=True,
         ).returncode
         != 0
     ):

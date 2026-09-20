@@ -51,3 +51,21 @@ def test_ensure_runtime_creates_directories(tmp_path: Path) -> None:
     settings.ensure_runtime()
     assert settings.logs_dir.is_dir()
     assert settings.cache_dir.is_dir()
+
+
+def test_blank_optional_env_values_mean_unset(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "DISCORD_TOKEN=\nDISCORD_GUILD_ID=\nDISCORD_TEST_GUILD_ID=123\n",
+        encoding="utf-8",
+    )
+    settings = Settings(_env_file=env_file)
+    assert settings.discord_guild_id is None
+    assert settings.discord_test_guild_id == 123
+
+
+def test_effective_guild_prefers_test_guild() -> None:
+    settings = Settings(_env_file=None, discord_guild_id=111, discord_test_guild_id=222)
+    assert settings.effective_guild_id == 222
+    assert Settings(_env_file=None, discord_guild_id=111).effective_guild_id == 111
+    assert Settings(_env_file=None).effective_guild_id is None

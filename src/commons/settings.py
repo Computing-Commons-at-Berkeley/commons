@@ -26,6 +26,9 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
+        # A blank optional value (for example an unused guild ID) means "unset",
+        # not "invalid integer" (R13).
+        env_ignore_empty=True,
     )
 
     # --- Discord ---
@@ -92,8 +95,22 @@ class Settings(BaseSettings):
         return self.runtime_dir / "llm_usage.jsonl"
 
     @property
+    def scheduler_state_path(self) -> Path:
+        return self.runtime_dir / "scheduler_state.json"
+
+    @property
     def effective_llm_base_url(self) -> str:
         return (self.llm_base_url or DEFAULT_LLM_BASE_URL).rstrip("/")
+
+    @property
+    def effective_guild_id(self) -> int | None:
+        """The one guild this process operates on (R08).
+
+        The test guild intentionally wins when both are configured so a developer
+        cannot accidentally read production activity.
+        """
+
+        return self.discord_test_guild_id or self.discord_guild_id
 
     # --- requirement helpers: fail loudly and early ---
     def ensure_runtime(self) -> Path:

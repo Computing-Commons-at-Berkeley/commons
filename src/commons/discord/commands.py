@@ -1,11 +1,14 @@
-"""Discord command registration for v0.1.
+"""Discord command registration, access control, and collection helpers.
 
-/archive, /project, and /digest are implemented here. Commands stay thin: they
-translate Discord objects into DTOs and hand off to a workflow service.
+Commands stay thin, but access control is centralized here so both the slash
+command and the message context action make the same guild, member and
+source-visibility decision before reading any content (review R01, R08).
 """
 
 from __future__ import annotations
 
+import asyncio
+from dataclasses import dataclass
 from datetime import UTC
 
 import discord
@@ -21,7 +24,7 @@ from commons.digest import (
     RadarCandidate,
 )
 from commons.discord.archive import ArchiveOutcome, ArchiveRequest, TranscriptMessage
-from commons.discord.digest import DigestOutcome, DigestRequest
+from commons.discord.digest import DigestOutcome, DigestRequest, render_digest_text
 from commons.discord.project import ProjectCreateRequest, ProjectOutcome
 from commons.errors import ArchiveError, CommonsError, DigestError, GitError, LLMError, ProjectError
 from commons.github.run import collect_radar_from_settings
@@ -31,6 +34,46 @@ from commons.news.query import items_since
 from commons.settings import Settings
 
 log = get_logger("commons.discord.commands")
+
+THREAD_CONTEXT_LIMIT = 200
+DIGEST_HISTORY_LIMIT = 200
+DIGEST_THREAD_LIMIT = 20
+DISCORD_MESSAGE_LIMIT = 1900
+
+
+@dataclass(frozen=True)
+class AccessContext:
+    """Inputs for one archive authorization decision (pure, testable)."""
+
+    effective_guild_id: int | None
+    source_guild_id: int | None
+    allow_members: bool
+    invoker_is_member: bool
+    invoker_can_view: bool
+    bot_can_view: bool
+    invoker_can_read_history: bool = True
+
+
+def check_archive_access(ctx: AccessContext) -> str | None:
+    """Return a denial reason, or None when the archive may proceed."""
+
+    if ctx.effective_guild_id is None:
+        return "This bot is not configured for a server."
+    if ctx.source_guild_id is None:
+        return "The selected content is not in a server."
+    if ctx.source_guild_id != ctx.effective_guild_id:
+        return "The selected content belongs to a different server."
+    if not ctx.allow_members:
+        return "Archiving is disabled by policy."
+    if not ctx.invoker_is_member:
+        return "Only members of this server may archive."
+    if not ctx.invoker_can_view:
+        return "You do not have access to the selected content."
+    if not ctx.bot_can_view:
+        return "I do not have access to the selected content."
+    if not ctx.invoker_can_read_history:
+        return "You cannot read the surrounding history."
+    return None
 
 
 def parse_message_link(link: str) -> tuple[int, int, int]:
@@ -46,6 +89,56 @@ def parse_message_link(link: str) -> tuple[int, int, int]:
     except ValueError as exc:
         raise ValueError(f"not a Discord message link: {link}") from exc
     return guild_id, channel_id, message_id
+
+
+def effective_guild_id(interaction: discord.Interaction) -> int | None:
+    settings = getattr(interaction.client, "settings", None)
+    return settings.effective_guild_id if settings is not None else None
+
+
+def check_command_guild(interaction: discord.Interaction) -> str | None:
+    """Scope every command to the one configured guild (R08)."""
+
+    configured = effective_guild_id(interaction)
+    if configured is None:
+        return "This bot is not configured for a server."
+    if interaction.guild is None or interaction.guild.id != configured:
+        return "This command is only available in the configured community server."
+    return None
+
+
+def _allow_members(interaction: discord.Interaction) -> bool:
+    policy = getattr(interaction.client, "policy", None)
+    return bool(policy.archive.allow_members) if policy is not None else False
+
+
+def _can_view(channel: object, member: object) -> bool:
+    try:
+        return bool(channel.permissions_for(member).view_channel)  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - a non-member or unexpected channel is "no access"
+        return False
+
+
+def _access_context(interaction: discord.Interaction, message: discord.Message) -> AccessContext:
+    configured = effective_guild_id(interaction)
+    guild = interaction.guild
+    member = interaction.user
+    is_member = (
+        guild is not None
+        and configured is not None
+        and guild.id == configured
+        and getattr(member, "guild", None) is not None
+        and member.guild.id == configured
+    )
+    bot_member = guild.me if guild is not None else None
+    return AccessContext(
+        effective_guild_id=configured,
+        source_guild_id=message.guild.id if message.guild else None,
+        allow_members=_allow_members(interaction),
+        invoker_is_member=bool(is_member),
+        invoker_can_view=_can_view(message.channel, member),
+        bot_can_view=_can_view(message.channel, bot_member),
+    )
 
 
 def message_to_transcript(message: discord.Message) -> TranscriptMessage:
@@ -82,20 +175,56 @@ def build_source(message: discord.Message) -> DiscordSource:
     )
 
 
+def merge_context(
+    selected: object | None,
+    thread_messages: list[object],
+    parent: object | None,
+) -> list[object]:
+    """Order context as parent, selected, then thread, de-duplicated (R10).
+
+    The selected message is always first among the replies so a bounded context
+    window cannot drop the message the member explicitly chose.
+    """
+
+    ordered: list[object] = []
+    seen: set[int] = set()
+    for item in [parent, selected, *thread_messages]:
+        if item is None:
+            continue
+        identity = getattr(item, "id", None)
+        if identity is not None and identity in seen:
+            continue
+        if identity is not None:
+            seen.add(identity)
+        ordered.append(item)
+    return ordered
+
+
 async def gather_messages(message: discord.Message) -> tuple[list[TranscriptMessage], str]:
-    """Read the surrounding thread when there is one, else just the message."""
+    """Read the surrounding thread, retaining the selected message and its parent."""
 
     thread = _thread_for(message)
-    messages: list[discord.Message] = [message]
+    history: list[discord.Message] = [message]
+    parent: discord.Message | None = None
     title_hint = ""
     if thread is not None:
         title_hint = thread.name
         try:
-            messages = [item async for item in thread.history(limit=200, oldest_first=True)]
+            history = [
+                item async for item in thread.history(limit=THREAD_CONTEXT_LIMIT, oldest_first=True)
+            ]
         except discord.HTTPException:
             log.warning("could not read thread history; archiving the selected message only")
-            messages = [message]
-    return [message_to_transcript(item) for item in messages], title_hint
+            history = [message]
+        try:
+            parent_channel = thread.parent
+            if parent_channel is not None:
+                parent = await parent_channel.fetch_message(thread.id)
+        except (discord.HTTPException, AttributeError, ValueError):
+            parent = None
+
+    ordered = merge_context(message, history, parent)
+    return [message_to_transcript(item) for item in ordered], title_hint
 
 
 async def _run_archive(
@@ -104,6 +233,12 @@ async def _run_archive(
     *,
     title_hint: str | None = None,
 ) -> None:
+    denial = check_archive_access(_access_context(interaction, message))
+    if denial is not None:
+        log.info("archive denied for %s: %s", interaction.user, denial)
+        await interaction.response.send_message(denial, ephemeral=True)
+        return
+
     await interaction.response.defer(thinking=True)
     service = getattr(interaction.client, "archive_service", None)
     if service is None:
@@ -167,6 +302,11 @@ async def _run_project(
     goal: str | None,
     members: str | None,
 ) -> None:
+    denial = check_command_guild(interaction)
+    if denial is not None:
+        await interaction.response.send_message(denial, ephemeral=True)
+        return
+
     await interaction.response.defer(thinking=True)
     service = getattr(interaction.client, "project_service", None)
     if service is None:
@@ -210,12 +350,39 @@ def _project_embed(outcome: ProjectOutcome) -> discord.Embed:
     return embed
 
 
+async def _history(channel: object, period: DigestPeriod, label: str) -> list[DigestMessage]:
+    messages: list[DigestMessage] = []
+    try:
+        collected = [
+            item
+            async for item in channel.history(  # type: ignore[attr-defined]
+                after=period.start,
+                limit=DIGEST_HISTORY_LIMIT,
+                oldest_first=False,
+            )
+        ]
+    except discord.HTTPException:
+        log.warning("could not read %s for the digest", label)
+        return []
+    for item in reversed(collected):
+        messages.append(
+            DigestMessage(
+                channel=label,
+                author=getattr(item.author, "display_name", str(item.author)),
+                content=item.content or "",
+                created_at=item.created_at.astimezone(UTC).isoformat(timespec="minutes"),
+                jump_url=item.jump_url,
+            )
+        )
+    return messages
+
+
 async def collect_activity(
     guild: discord.Guild,
     channels: set[str],
     period: DigestPeriod,
 ) -> list[ChannelActivity]:
-    """Read the configured digest channels for the period. No server-wide ingest."""
+    """Read configured channels and their active threads for the period (R14)."""
 
     if not channels:
         return []
@@ -224,20 +391,13 @@ async def collect_activity(
     for channel in guild.text_channels:
         if channel.name not in channels:
             continue
-        messages: list[DigestMessage] = []
+        messages = await _history(channel, period, channel.name)
         try:
-            async for message in channel.history(after=period.start, limit=200, oldest_first=True):
-                messages.append(
-                    DigestMessage(
-                        channel=channel.name,
-                        author=getattr(message.author, "display_name", str(message.author)),
-                        content=message.content or "",
-                        created_at=message.created_at.astimezone(UTC).isoformat(timespec="minutes"),
-                        jump_url=message.jump_url,
-                    )
-                )
-        except discord.HTTPException:
-            log.warning("could not read #%s for the digest", channel.name)
+            threads = list(channel.threads)
+        except Exception:  # noqa: BLE001 - thread listing is best-effort
+            threads = []
+        for thread in threads[:DIGEST_THREAD_LIMIT]:
+            messages.extend(await _history(thread, period, f"{channel.name}/{thread.name}"))
         activities.append(ChannelActivity(channel=channel.name, messages=messages))
     return activities
 
@@ -246,14 +406,15 @@ def news_candidates_for(
     settings: Settings,
     period: DigestPeriod,
     *,
+    category: str | None = None,
     limit: int = 200,
 ) -> list[NewsCandidate]:
-    """Read stored news items for the period. One corpus, multiple views."""
+    """Read stored news items for the period, filtered before any limit (R14)."""
 
     connection = news_db.connect(settings.news_db_path)
     try:
         news_db.init_db(connection)
-        rows = items_since(connection, period.start, limit=limit)
+        rows = items_since(connection, period.start, category=category, limit=limit)
     finally:
         connection.close()
     return [
@@ -297,12 +458,34 @@ def radar_candidates_for(
     ]
 
 
+def digest_chunks(outcome: DigestOutcome, *, limit: int = DISCORD_MESSAGE_LIMIT) -> list[str]:
+    """Bound the synthesized digest to Discord message sizes (R07)."""
+
+    text = render_digest_text(outcome)
+    return [text[index : index + limit] for index in range(0, len(text), limit)] or [
+        "(empty digest)"
+    ]
+
+
+async def send_digest(target: object, outcome: DigestOutcome) -> None:
+    """Post the actual digest content, then the reference embed. Shared by both paths."""
+
+    for chunk in digest_chunks(outcome):
+        await target.send(chunk)  # type: ignore[attr-defined]
+    await target.send(embed=digest_embed(outcome))  # type: ignore[attr-defined]
+
+
 async def _run_digest(
     interaction: discord.Interaction,
     *,
     period_label: str,
     category: str | None,
 ) -> None:
+    denial = check_command_guild(interaction)
+    if denial is not None:
+        await interaction.response.send_message(denial, ephemeral=True)
+        return
+
     await interaction.response.defer(thinking=True)
     service = getattr(interaction.client, "digest_service", None)
     if service is None:
@@ -313,14 +496,18 @@ async def _run_digest(
         period = DigestPeriod.from_label(period_label)
         policy = getattr(interaction.client, "policy", None)
         channels = set(policy.digest.channels) if policy is not None else set()
-        activity = (
-            await collect_activity(interaction.guild, channels, period)
-            if interaction.guild is not None
+        activity = await collect_activity(interaction.guild, channels, period)
+        settings = getattr(interaction.client, "settings", None)
+        news = (
+            await asyncio.to_thread(news_candidates_for, settings, period, category=category)
+            if settings is not None
             else []
         )
-        settings = getattr(interaction.client, "settings", None)
-        news = news_candidates_for(settings, period) if settings is not None else []
-        radar = radar_candidates_for(settings, period) if settings is not None else []
+        radar = (
+            await asyncio.to_thread(radar_candidates_for, settings, period)
+            if settings is not None
+            else []
+        )
         request = DigestRequest(
             period=period_label,
             activity=activity,
@@ -339,7 +526,7 @@ async def _run_digest(
         await interaction.followup.send(f"Digest failed unexpectedly: {exc}")
         return
 
-    await interaction.followup.send(embed=digest_embed(outcome))
+    await send_digest(interaction.followup, outcome)
 
 
 def digest_embed(outcome: DigestOutcome) -> discord.Embed:
@@ -372,14 +559,25 @@ def register_commands(bot: discord.Client) -> None:
     ) -> None:
         if message_link:
             try:
-                _guild_id, channel_id, message_id = parse_message_link(message_link)
+                link_guild_id, channel_id, message_id = parse_message_link(message_link)
             except ValueError as exc:
                 await interaction.response.send_message(str(exc), ephemeral=True)
+                return
+            configured = effective_guild_id(interaction)
+            if link_guild_id != configured:
+                await interaction.response.send_message(
+                    "That link belongs to a different server.", ephemeral=True
+                )
                 return
             channel = interaction.client.get_channel(channel_id)
             if channel is None:
                 await interaction.response.send_message(
                     "I cannot see that channel.", ephemeral=True
+                )
+                return
+            if not _can_view(channel, interaction.user):
+                await interaction.response.send_message(
+                    "You do not have access to that channel.", ephemeral=True
                 )
                 return
             try:
@@ -426,14 +624,20 @@ def register_commands(bot: discord.Client) -> None:
     )
     @app_commands.describe(
         period="Time window to summarize",
-        category="Optional category filter (used by the news and radar milestones)",
+        category="Filter news candidates to one category",
     )
     @app_commands.choices(
         period=[
             app_commands.Choice(name="last 24 hours", value="1d"),
             app_commands.Choice(name="last 7 days", value="7d"),
             app_commands.Choice(name="last 30 days", value="30d"),
-        ]
+        ],
+        category=[
+            app_commands.Choice(name="ml", value="ml"),
+            app_commands.Choice(name="infra", value="infra"),
+            app_commands.Choice(name="economics", value="economics"),
+            app_commands.Choice(name="berkeley", value="berkeley"),
+        ],
     )
     async def digest_command(
         interaction: discord.Interaction,
