@@ -31,8 +31,9 @@ src/commons/            importable package (module-first, no service boundaries)
   text.py               slug/name helpers
   llm.py                one thin LLM module; no provider framework
   prompts.py            prompt text
-  community_repo/       git writer, schemas, Markdown artifacts, project records
-  discord/              bot shell, commands, archive + project workflows, sync
+  digest.py             digest logic (periods, candidate selection, synthesis)
+  community_repo/       git writer, schemas, Markdown artifacts, projects, digests
+  discord/              bot shell, commands, archive/project/digest workflows, sync
 scripts/sync_discord.py CLI wrapper around commons.discord.sync
 tests/                  pytest suite
 docs/                   DEVELOPMENT.md, DEPLOYMENT.md, OPERATIONS.md

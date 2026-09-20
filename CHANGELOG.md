@@ -35,6 +35,10 @@ this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`commons/discord/project.py`, `commons/community_repo/projects.py`).
 - Shared Markdown/frontmatter helpers for durable artifacts
   (`commons/community_repo/markdown.py`).
+- `/digest` workflow and command: one code path for manual and scheduled digests,
+  with deterministic candidate selection before synthesis and durable digests at
+  `data/digests/<date>-<period>.md` (`commons/digest.py`,
+  `commons/discord/digest.py`, `commons/community_repo/digests.py`).
 
 ### Changed
 
