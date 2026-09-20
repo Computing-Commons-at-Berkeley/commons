@@ -52,9 +52,9 @@ src/commons/
   text.py              slug/name helpers
   llm.py               one thin LLM module (no provider framework)
   prompts.py           prompt text
-  community_repo/      git writer, artifact schemas, Markdown rendering
-  discord/             bot shell, commands, archive workflow
-  news/                (later) SQLite news pipeline
+  community_repo/      git writer, schemas, Markdown artifacts, projects, digests
+  discord/             bot shell, commands, archive/project/digest workflows
+  news/                SQLite news pipeline (ingest, dedup, temporal queries)
   github/              (later) watchlist polling
 scripts/sync_discord.py
 web/                   (later) optional read-only Streamlit UI

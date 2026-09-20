@@ -39,6 +39,9 @@ this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   with deterministic candidate selection before synthesis and durable digests at
   `data/digests/<date>-<period>.md` (`commons/digest.py`,
   `commons/discord/digest.py`, `commons/community_repo/digests.py`).
+- News pipeline foundation: SQLite runtime schema (`sources`, `news_items`,
+  `watch_state`, `llm_usage`), deterministic URL canonicalization and dedup, RSS
+  and GitHub-release ingestion, and 24h/7d/30d temporal queries (`commons/news/`).
 
 ### Changed
 
