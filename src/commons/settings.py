@@ -47,6 +47,8 @@ class Settings(BaseSettings):
     llm_api_key: SecretStr | None = None
     llm_model: str = "gpt-4o-mini"
     llm_base_url: str | None = None
+    # Provider thinking toggle (DeepSeek: enabled|disabled). Blank = provider default.
+    llm_thinking: str | None = None
     # Optional explicit pricing for providers/models not in the built-in table.
     llm_input_price_per_mtok: float | None = None
     llm_output_price_per_mtok: float | None = None

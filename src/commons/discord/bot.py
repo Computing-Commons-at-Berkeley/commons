@@ -228,6 +228,7 @@ def build_services(settings: Settings) -> tuple[CommunityRepo, LLMClient, Policy
         budget_action=policy.llm.on_limit,
         input_price_per_mtok=settings.llm_input_price_per_mtok,
         output_price_per_mtok=settings.llm_output_price_per_mtok,
+        thinking=settings.llm_thinking,
     )
     return repo, llm, policy
 

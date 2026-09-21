@@ -143,6 +143,7 @@ class LLMClient:
         input_price_per_mtok: float | None = None,
         output_price_per_mtok: float | None = None,
         on_warning: Callable[[str], None] | None = None,
+        thinking: str | None = None,
     ) -> None:
         self.api_key = api_key
         self.model = model
@@ -155,6 +156,7 @@ class LLMClient:
         self.input_price_per_mtok = input_price_per_mtok
         self.output_price_per_mtok = output_price_per_mtok
         self.on_warning = on_warning
+        self.thinking = thinking
 
     def _check_budget(self) -> None:
         if self.usage_log is None or self.monthly_soft_limit_usd <= 0:
@@ -217,6 +219,8 @@ class LLMClient:
         }
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
+        if self.thinking in {"enabled", "disabled"}:
+            payload["thinking"] = {"type": self.thinking}
 
         data = self._post(payload)
         try:
