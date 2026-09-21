@@ -74,4 +74,6 @@ Use only these headings when you have substantive content:
 - Links
 
 body is Markdown prose or a bullet list. Omit headings that do not apply.
+Keep the whole digest under about 600 words: prefer a few high-signal bullets over
+exhaustive lists, and never list more than six items per heading.
 """

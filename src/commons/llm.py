@@ -224,11 +224,13 @@ class LLMClient:
 
         data = self._post(payload)
         try:
-            content = data["choices"][0]["message"]["content"]
+            choice = data["choices"][0]
+            content = choice["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
             raise LLMError("LLM response did not contain a message") from exc
         if not isinstance(content, str) or not content.strip():
             raise LLMError("LLM returned an empty message")
+        finish_reason = choice.get("finish_reason") if isinstance(choice, dict) else None
 
         usage = data.get("usage") or {}
         input_tokens = int(usage.get("prompt_tokens") or 0)
@@ -250,12 +252,18 @@ class LLMClient:
         if self.usage_log is not None:
             self.usage_log.record(record)
         log.info(
-            "llm call operation=%s model=%s input_tokens=%d output_tokens=%d",
+            "llm call operation=%s model=%s input_tokens=%d output_tokens=%d finish_reason=%s",
             operation,
             self.model,
             input_tokens,
             output_tokens,
+            finish_reason or "stop",
         )
+        if finish_reason == "length":
+            raise LLMError(
+                f"LLM output was truncated at max_tokens={max_tokens} "
+                "(finish_reason=length); raise the token budget or shorten the input"
+            )
         return content
 
     def complete_json(

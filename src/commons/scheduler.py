@@ -25,6 +25,10 @@ log = get_logger(__name__)
 # full interval (for example "the guild is not ready yet").
 SKIP = object()
 DEFAULT_RETRY = timedelta(minutes=15)
+# After this many consecutive failures, wait a full interval instead of retrying
+# every few minutes: a deterministic failure (bad config, truncated output) would
+# otherwise retry forever and burn LLM budget.
+MAX_PROMPT_RETRIES = 4
 
 
 def _parse_ts(value: Any) -> datetime | None:
@@ -111,6 +115,18 @@ class Scheduler:
         except OSError:
             log.warning("could not write scheduler state at %s", self.state_path)
 
+    def _fail(self, job: ScheduledJob, moment: datetime) -> None:
+        job.failures += 1
+        if job.failures >= MAX_PROMPT_RETRIES:
+            log.warning(
+                "scheduled job %s has failed %d times; waiting a full interval before retrying",
+                job.name,
+                job.failures,
+            )
+            job.next_due = moment + job.interval
+        else:
+            job.next_due = moment + job.retry_interval
+
     def _finish(self, job: ScheduledJob, moment: datetime, result: Any) -> None:
         if result is SKIP:
             job.next_due = moment + job.retry_interval
@@ -132,8 +148,7 @@ class Scheduler:
                 result = job.action()
             except Exception:  # noqa: BLE001 - one job failing must not stop the loop
                 log.exception("scheduled job %s failed", job.name)
-                job.failures += 1
-                job.next_due = moment + job.retry_interval
+                self._fail(job, moment)
                 ran.append(job.name)
                 continue
             self._finish(job, moment, result)
@@ -158,8 +173,7 @@ class Scheduler:
                         result = await result
             except Exception:  # noqa: BLE001 - one job failing must not stop the loop
                 log.exception("scheduled job %s failed", job.name)
-                job.failures += 1
-                job.next_due = moment + job.retry_interval
+                self._fail(job, moment)
                 ran.append(job.name)
                 continue
             self._finish(job, moment, result)

@@ -22,6 +22,10 @@ from commons.prompts import DIGEST_SYSTEM_PROMPT, DIGEST_USER_TEMPLATE
 PERIOD_DAYS: dict[str, int] = {"1d": 1, "7d": 7, "30d": 30}
 DEFAULT_PERIOD = "7d"
 
+# A digest is much longer than a single archive note: several headed sections with
+# bullets. 1200 tokens truncates it mid-JSON, so the digest gets its own budget.
+DIGEST_MAX_TOKENS = 4000
+
 
 @dataclass(frozen=True)
 class DigestPeriod:
@@ -192,6 +196,7 @@ def generate_digest(
     period: DigestPeriod,
     candidate_text: str,
     category: str | None = None,
+    max_tokens: int = DIGEST_MAX_TOKENS,
 ) -> list[DigestSection]:
     """Synthesize digest sections from already-selected candidates."""
 
@@ -201,7 +206,12 @@ def generate_digest(
         scope=scope,
         candidates=candidate_text or "(no candidate material)",
     )
-    data = client.complete_json(operation="digest", system=DIGEST_SYSTEM_PROMPT, user=user)
+    data = client.complete_json(
+        operation="digest",
+        system=DIGEST_SYSTEM_PROMPT,
+        user=user,
+        max_tokens=max_tokens,
+    )
 
     sections: list[DigestSection] = []
     raw = data.get("sections")
