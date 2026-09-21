@@ -62,11 +62,57 @@ Foreground:
 tc-bot
 ~~~
 
-Persistent process (choose one appropriate to the host):
+Persistent process. Run the bot as the account that owns the Git credentials, so
+that `git push` to the private community repository works.
 
-- systemd unit with `Restart=on-failure`
-- Windows Service or Task Scheduler job
-- any process supervisor (for example supervisord)
+### Windows (Task Scheduler)
+
+`scripts/run_bot.cmd` fixes the working directory and starts the bot. Open an
+**Administrator** PowerShell once and register a log-on task:
+
+~~~powershell
+$action = New-ScheduledTaskAction -Execute "C:\path\to\commons\scripts\run_bot.cmd"
+$trigger = New-ScheduledTaskTrigger -AtLogOn
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero)
+Register-ScheduledTask -TaskName "Technical Commons Bot" -Action $action -Trigger $trigger -Settings $settings -Force
+~~~
+
+Equivalent cmd.exe one-liner (without restart-on-failure settings):
+
+~~~cmd
+schtasks /Create /TN "Technical Commons Bot" /TR "C:\path\to\commons\scripts\run_bot.cmd" /SC ONLOGON /F
+~~~
+
+Manage it with `Start-ScheduledTask -TaskName "Technical Commons Bot"`,
+`Get-ScheduledTask`, or `Unregister-ScheduledTask -TaskName "Technical Commons Bot"`.
+Console output is appended to `logs/bot-console.log`.
+
+Two caveats: the task cannot be created without elevation, and running the bot as
+SYSTEM breaks `git push` because the stored credential belongs to your user
+profile.
+
+### Linux (systemd)
+
+~~~ini
+# /etc/systemd/system/commons-bot.service
+[Unit]
+Description=Technical Commons bot
+After=network-online.target
+
+[Service]
+WorkingDirectory=/srv/commons
+ExecStart=/srv/commons/.venv/bin/python -m commons.discord.bot
+User=commonsbot
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target
+~~~
+
+Then `sudo systemctl enable --now commons-bot`. On a server the Git credential
+must be a deploy key or a PAT for that account; the Windows credential manager
+does not exist there.
 
 The bot is stateless apart from the community checkout and SQLite, so restarts
 are safe. If the bot is offline the community continues to function as a normal
