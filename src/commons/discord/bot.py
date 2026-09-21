@@ -24,7 +24,7 @@ from commons.discord.commands import (
 from commons.discord.digest import DigestRequest, DigestService
 from commons.discord.notify import notify_bot_log
 from commons.discord.project import ProjectService
-from commons.errors import CommonsError, DigestError, GitError, LLMError
+from commons.errors import CommonsError
 from commons.llm import LLMClient, UsageLog
 from commons.logging import get_logger, setup_logging
 from commons.news.run import prune_news_items, run_ingestion
@@ -67,6 +67,10 @@ class CommonsBot(discord.Client):
             max_news=policy.news.max_items_per_digest,
         )
         self.scheduler = build_scheduler(settings, policy)
+        self._active_alerts: set[str] = set()
+        for job in self.scheduler.jobs:
+            if job.name == "news-ingestion":
+                job.action = self._ingestion_job
         if policy.digest.scheduled_weekly:
             self.scheduler.add(
                 "weekly-digest",
@@ -121,6 +125,49 @@ class CommonsBot(discord.Client):
         await super().close()
 
     async def _scheduled_digest_job(self, period_label: str) -> object:
+        key = f"digest:{period_label}"
+        try:
+            result = await self._generate_and_send_digest(period_label)
+        except Exception:
+            await self._alert(
+                key, f"Scheduled {period_label} digest failed; check the application log."
+            )
+            raise
+        if result is SKIP:
+            await self._alert(
+                key, f"Scheduled {period_label} digest deferred: guild or #digest unavailable."
+            )
+        else:
+            await self._recover(key, f"Scheduled {period_label} digest recovered.")
+        return result
+
+    async def _alert(self, key: str, message: str) -> None:
+        if key not in self._active_alerts and await notify_bot_log(self, message):
+            self._active_alerts.add(key)
+
+    async def _recover(self, key: str, message: str) -> None:
+        if key in self._active_alerts and await notify_bot_log(self, message):
+            self._active_alerts.remove(key)
+
+    async def _ingestion_job(self) -> None:
+        try:
+            results = await asyncio.to_thread(run_ingestion, self.settings)
+        except Exception:
+            await self._alert("ingestion", "News ingestion failed; check the application log.")
+            raise
+        await self._recover("ingestion", "News ingestion recovered.")
+        for result in results:
+            key = f"source:{result.source_id}"
+            if result.error and result.consecutive_failures >= 3:
+                await self._alert(
+                    key,
+                    f"News source {result.source_id} failed repeatedly; "
+                    "check its configuration and log.",
+                )
+            elif not result.error:
+                await self._recover(key, f"News source {result.source_id} recovered.")
+
+    async def _generate_and_send_digest(self, period_label: str) -> object:
         """One scheduled digest path, sharing /digest rendering, posted to #digest."""
 
         guild_id = self.settings.effective_guild_id
@@ -130,6 +177,9 @@ class CommonsBot(discord.Client):
         guild = self.get_guild(guild_id)
         if guild is None:
             log.warning("scheduled digest deferred: guild %s is not ready", guild_id)
+            return SKIP
+        channel = discord.utils.get(guild.text_channels, name="digest")
+        if channel is None:
             return SKIP
 
         period = DigestPeriod.from_label(period_label)
@@ -141,18 +191,7 @@ class CommonsBot(discord.Client):
             radar=await asyncio.to_thread(radar_candidates_for, self.settings, period),
             requested_by="scheduler",
         )
-        try:
-            outcome = await asyncio.to_thread(self.digest_service.generate, request)
-        except (DigestError, LLMError, GitError) as exc:
-            log.error("scheduled digest failed: %s", exc)
-            raise  # let the scheduler retry promptly rather than losing the period
-
-        channel = discord.utils.get(guild.text_channels, name="digest")
-        if channel is None:
-            log.warning(
-                "scheduled digest wrote %s but #digest was not found", outcome.relative_path
-            )
-            return SKIP
+        outcome = await asyncio.to_thread(self.digest_service.generate, request)
         await send_digest(channel, outcome)
         return None
 

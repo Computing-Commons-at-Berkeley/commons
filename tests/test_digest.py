@@ -70,7 +70,9 @@ def test_build_candidate_text_skips_empty_and_truncates() -> None:
     assert "bob" not in text
 
     truncated = build_candidate_text(make_activity(), max_chars=10)
-    assert truncated.endswith("[candidates truncated]")
+    assert len(truncated) <= 10
+    assert len(truncated) < len(text)
+    assert build_candidate_text(make_activity(), max_chars=40).endswith("[truncated]")
 
 
 def test_generate_digest_parses_sections() -> None:

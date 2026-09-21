@@ -63,6 +63,15 @@ this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Follow-up review B01-B08: valid Discord bootstrap overwrite arguments and
+  nonzero failure exit; remote-graph push recovery; real history/private-thread
+  authorization before reads; OS-owned writer locks; archive duplicate lookup
+  before LLM use; recent and archived public thread digest inputs; both project
+  goal and current state; scheduled digest/repeated ingestion failure alerts.
+- Synchronize project records before digest collection and suppress mentions in
+  operational notices. Added launch/recovery regression tests and corrected the
+  isolated test-guild smoke procedure.
+
 - Addressed the 2026-09-19 review findings: archive authorization checks guild,
   member policy, source and bot visibility before any read (R01); artifact paths
   are chosen inside the repository lock (R02); an unexpected dirty index stops the

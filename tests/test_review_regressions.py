@@ -173,7 +173,7 @@ def test_digest_chunks_are_bounded() -> None:
 
 
 # --- R09: stale lock reclamation ------------------------------------------
-def test_stale_lock_is_reclaimed(tmp_path: Path) -> None:
+def test_leftover_lock_file_does_not_block_a_new_owner(tmp_path: Path) -> None:
     lock_path = tmp_path / "lock"
     lock_path.write_text("{}", encoding="utf-8")
     stale = time.time() - 10_000
@@ -182,7 +182,8 @@ def test_stale_lock_is_reclaimed(tmp_path: Path) -> None:
     repo = CommunityRepo(tmp_path, lock_path=lock_path, lock_timeout=1.0)
     with repo.lock():
         pass
-    assert not lock_path.exists()
+    # The OS owns exclusion; the stable file must never be unlinked by a writer.
+    assert lock_path.exists()
 
 
 # --- R10: selected message and parent survive the context window ----------

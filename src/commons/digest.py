@@ -94,20 +94,41 @@ def _fit_blocks(blocks: list[str], max_chars: int) -> str:
 
     if not blocks:
         return ""
-    if sum(len(block) for block in blocks) <= max_chars:
+    if sum(len(block) for block in blocks) + 2 * (len(blocks) - 1) <= max_chars:
         return "\n\n".join(blocks)
 
-    share = max(200, max_chars // len(blocks))
+    share = max(0, (max_chars - 2 * (len(blocks) - 1)) // len(blocks))
     trimmed: list[str] = []
     for block in blocks:
         if len(block) <= share:
             trimmed.append(block)
         else:
-            trimmed.append(block[:share].rstrip() + "\n[truncated]")
+            marker = "\n[truncated]"
+            trimmed.append((block[: max(0, share - len(marker))].rstrip() + marker)[:share])
     text = "\n\n".join(trimmed)
-    if len(text) > max_chars:
-        text = text[:max_chars] + "\n\n[candidates truncated]"
-    return text
+    return text[:max_chars]
+
+
+def select_messages(messages: list[DigestMessage], limit: int) -> list[DigestMessage]:
+    """Reserve space for each discussion, selecting recent messages before rendering."""
+    by_discussion: dict[str, list[DigestMessage]] = {}
+    for message in messages:
+        if message.content.strip():
+            by_discussion.setdefault(message.channel, []).append(message)
+    streams = [
+        sorted(items, key=lambda item: item.created_at or "", reverse=True)
+        for items in by_discussion.values()
+    ]
+    streams.sort(key=lambda items: items[0].created_at or "", reverse=True)
+    chosen: list[DigestMessage] = []
+    while streams and len(chosen) < limit:
+        for items in streams:
+            if len(chosen) >= limit:
+                break
+            chosen.append(items.pop(0))
+        streams = [items for items in streams if items]
+    # Preserve the fair, recent-first selection order under the character cap.
+    return chosen
 
 
 def build_candidate_text(
@@ -126,7 +147,7 @@ def build_candidate_text(
 
     for group in activity:
         lines: list[str] = []
-        for message in group.messages[:max_per_channel]:
+        for message in select_messages(group.messages, max_per_channel):
             content = (message.content or "").strip()
             if not content:
                 continue
@@ -146,8 +167,12 @@ def build_candidate_text(
     if projects:
         lines = []
         for project in projects:
-            detail = project.goal or project.current_state
-            suffix = f" - {detail}" if detail else ""
+            details = []
+            if project.goal:
+                details.append(f"Goal: {project.goal[:1000]}")
+            if project.current_state:
+                details.append(f"Current state: {project.current_state[:1000]}")
+            suffix = " - " + "; ".join(details) if details else ""
             lines.append(f"- {project.title} (status: {project.status}){suffix}")
         blocks.append("## Projects\n" + "\n".join(lines))
 

@@ -98,6 +98,17 @@ def test_ingest_source_records_error_without_crashing(tmp_path: Path) -> None:
     assert result.error is not None
     assert result.inserted == 0
     assert db.get_source(connection, "example")["error_count"] == 1
+    assert result.consecutive_failures == 1
+    for count in (2, 3):
+        result = ingest_source(connection, make_source(), transport=httpx.MockTransport(handler))
+        assert result.consecutive_failures == count
+    recovered = ingest_source(
+        connection,
+        make_source(),
+        transport=httpx.MockTransport(lambda request: httpx.Response(304)),
+    )
+    assert recovered.consecutive_failures == 0
+    assert db.get_source(connection, "example")["error_count"] == 0
 
 
 def test_ingest_source_honours_not_modified(tmp_path: Path) -> None:

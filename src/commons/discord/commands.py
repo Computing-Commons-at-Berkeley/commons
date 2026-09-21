@@ -53,6 +53,7 @@ class AccessContext:
     invoker_can_view: bool
     bot_can_view: bool
     invoker_can_read_history: bool = True
+    bot_can_read_history: bool = True
 
 
 def check_archive_access(ctx: AccessContext) -> str | None:
@@ -74,6 +75,8 @@ def check_archive_access(ctx: AccessContext) -> str | None:
         return "I do not have access to the selected content."
     if not ctx.invoker_can_read_history:
         return "You cannot read the surrounding history."
+    if not ctx.bot_can_read_history:
+        return "I cannot read the surrounding history."
     return None
 
 
@@ -121,6 +124,10 @@ def _can_view(channel: object, member: object) -> bool:
 
 
 def _access_context(interaction: discord.Interaction, message: discord.Message) -> AccessContext:
+    return _channel_access_context(interaction, message.channel)
+
+
+def _channel_access_context(interaction: discord.Interaction, channel: object) -> AccessContext:
     configured = effective_guild_id(interaction)
     guild = interaction.guild
     member = interaction.user
@@ -134,12 +141,46 @@ def _access_context(interaction: discord.Interaction, message: discord.Message) 
     bot_member = guild.me if guild is not None else None
     return AccessContext(
         effective_guild_id=configured,
-        source_guild_id=message.guild.id if message.guild else None,
+        source_guild_id=getattr(getattr(channel, "guild", None), "id", None),
         allow_members=_allow_members(interaction),
         invoker_is_member=bool(is_member),
-        invoker_can_view=_can_view(message.channel, member),
-        bot_can_view=_can_view(message.channel, bot_member),
+        invoker_can_view=_can_view(channel, member),
+        bot_can_view=_can_view(channel, bot_member),
+        invoker_can_read_history=_can_read_history(channel, member),
+        bot_can_read_history=_can_read_history(channel, bot_member),
     )
+
+
+def _can_read_history(channel: object, member: object) -> bool:
+    try:
+        return bool(channel.permissions_for(member).read_message_history)
+    except (AttributeError, TypeError, discord.ClientException):
+        return False
+
+
+async def archive_access_denial(interaction: discord.Interaction, channel: object) -> str | None:
+    """Authorize metadata before any message/history request, including private threads."""
+    denial = check_command_guild(interaction) or check_archive_access(
+        _channel_access_context(interaction, channel)
+    )
+    if denial is not None:
+        return denial
+    if isinstance(channel, discord.Thread) and channel.is_private():
+        for member in (interaction.user, interaction.guild.me):
+            if channel.permissions_for(member).manage_threads:
+                continue
+            try:
+                await channel.fetch_member(member.id)
+            except discord.HTTPException:
+                return "Private thread access could not be verified."
+    return None
+
+
+async def _archive_error(interaction: discord.Interaction, message: str) -> None:
+    if interaction.response.is_done():
+        await interaction.followup.send(message, ephemeral=True)
+    else:
+        await interaction.response.send_message(message, ephemeral=True)
 
 
 def message_to_transcript(message: discord.Message) -> TranscriptMessage:
@@ -234,13 +275,19 @@ async def _run_archive(
     *,
     title_hint: str | None = None,
 ) -> None:
-    denial = check_archive_access(_access_context(interaction, message))
+    denial = await archive_access_denial(interaction, message.channel)
+    thread = _thread_for(message)
+    if denial is None and thread is not None:
+        denial = await archive_access_denial(interaction, thread)
+        if denial is None and thread.parent is not None:
+            denial = await archive_access_denial(interaction, thread.parent)
     if denial is not None:
         log.info("archive denied for %s: %s", interaction.user, denial)
-        await interaction.response.send_message(denial, ephemeral=True)
+        await _archive_error(interaction, denial)
         return
 
-    await interaction.response.defer(thinking=True)
+    if not interaction.response.is_done():
+        await interaction.response.defer(thinking=True)
     service = getattr(interaction.client, "archive_service", None)
     if service is None:
         await interaction.followup.send("Archive is not configured on this bot.")
@@ -375,7 +422,7 @@ async def _history(channel: object, period: DigestPeriod, label: str) -> list[Di
                 channel=label,
                 author=getattr(item.author, "display_name", str(item.author)),
                 content=item.content or "",
-                created_at=item.created_at.astimezone(UTC).isoformat(timespec="minutes"),
+                created_at=item.created_at.astimezone(UTC).isoformat(timespec="microseconds"),
                 jump_url=item.jump_url,
             )
         )
@@ -387,7 +434,7 @@ async def collect_activity(
     channels: set[str],
     period: DigestPeriod,
 ) -> list[ChannelActivity]:
-    """Read configured channels and their active threads for the period (R14)."""
+    """Read configured channels and bounded public thread activity for the period."""
 
     if not channels:
         return []
@@ -401,6 +448,22 @@ async def collect_activity(
             threads = list(channel.threads)
         except Exception:  # noqa: BLE001 - thread listing is best-effort
             threads = []
+        # Private threads require explicit archive authorization; never widen
+        # their audience by including them in a community-wide digest.
+        threads = [thread for thread in threads if not thread.is_private()]
+        if hasattr(channel, "archived_threads"):
+            try:
+                async for thread in channel.archived_threads(limit=DIGEST_THREAD_LIMIT):
+                    if thread.archive_timestamp and thread.archive_timestamp < period.start:
+                        break
+                    if not thread.is_private():
+                        threads.append(thread)
+            except discord.HTTPException:
+                log.warning("could not list archived threads in #%s", channel.name)
+        unique = {thread.id: thread for thread in threads}
+        threads = sorted(
+            unique.values(), key=lambda thread: thread.last_message_id or thread.id, reverse=True
+        )
         for thread in threads[:DIGEST_THREAD_LIMIT]:
             messages.extend(await _history(thread, period, f"{channel.name}/{thread.name}"))
         activities.append(ChannelActivity(channel=channel.name, messages=messages))
@@ -564,6 +627,10 @@ def register_commands(bot: discord.Client) -> None:
         message_link: str | None = None,
         title: str | None = None,
     ) -> None:
+        denial = check_command_guild(interaction)
+        if denial is not None or not _allow_members(interaction):
+            await _archive_error(interaction, denial or "Archiving is disabled by policy.")
+            return
         if message_link:
             try:
                 link_guild_id, channel_id, message_id = parse_message_link(message_link)
@@ -582,26 +649,28 @@ def register_commands(bot: discord.Client) -> None:
                     "I cannot see that channel.", ephemeral=True
                 )
                 return
-            if not _can_view(channel, interaction.user):
-                await interaction.response.send_message(
-                    "You do not have access to that channel.", ephemeral=True
-                )
+            denial = await archive_access_denial(interaction, channel)
+            if denial is not None:
+                await _archive_error(interaction, denial)
                 return
+            await interaction.response.defer(thinking=True)
             try:
                 message = await channel.fetch_message(message_id)
             except discord.HTTPException:
-                await interaction.response.send_message(
-                    "I could not fetch that message.", ephemeral=True
-                )
+                await _archive_error(interaction, "I could not fetch that message.")
                 return
         elif isinstance(interaction.channel, discord.Thread):
-            async for candidate in interaction.channel.history(limit=1, oldest_first=True):
-                message = candidate
-                break
-            else:
-                await interaction.response.send_message(
-                    "This thread has no readable messages.", ephemeral=True
-                )
+            denial = await archive_access_denial(interaction, interaction.channel)
+            if denial is not None:
+                await _archive_error(interaction, denial)
+                return
+            await interaction.response.defer(thinking=True)
+            try:
+                message = await anext(interaction.channel.history(limit=1, oldest_first=True), None)
+            except discord.HTTPException:
+                message = None
+            if message is None:
+                await _archive_error(interaction, "This thread has no readable messages.")
                 return
         else:
             await interaction.response.send_message(

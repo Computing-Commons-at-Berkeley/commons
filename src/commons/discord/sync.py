@@ -175,19 +175,17 @@ async def apply_sync(guild: discord.Guild, config: DiscordConfig, plan: SyncPlan
     for category_name, spec in config.categories.items():
         category = discord.utils.get(guild.categories, name=category_name)
         if category is None:
-            overwrites = _private_overwrites(guild) if spec.private else None
-            category = await guild.create_category(
-                category_name, overwrites=overwrites, reason="sync_discord"
-            )
+            options = {"overwrites": _private_overwrites(guild)} if spec.private else {}
+            category = await guild.create_category(category_name, **options, reason="sync_discord")
             log.info("created category %s (private=%s)", category_name, spec.private)
         for channel in spec.channels:
             if discord.utils.get(category.channels, name=channel.name) is not None:
                 continue
-            overwrites = _private_overwrites(guild) if channel.private else None
+            options = {"overwrites": _private_overwrites(guild)} if channel.private else {}
             await category.create_text_channel(
                 channel.name,
                 topic=channel.topic,
-                overwrites=overwrites,
+                **options,
                 reason="sync_discord",
             )
             log.info(
@@ -244,9 +242,11 @@ def main(argv: list[str] | None = None) -> int:
     intents = discord.Intents.none()
     intents.guilds = True
     client = discord.Client(intents=intents)
+    exit_code = 0
 
     @client.event
     async def on_ready() -> None:
+        nonlocal exit_code
         try:
             guild = client.get_guild(guild_id) or await client.fetch_guild(guild_id)
             plan = await sync_guild(guild, config, dry_run=args.dry_run)
@@ -259,12 +259,13 @@ def main(argv: list[str] | None = None) -> int:
                 len(plan.create_channels),
             )
         except Exception:  # noqa: BLE001 - surface the failure, then exit non-zero
+            exit_code = 1
             log.exception("discord sync failed")
         finally:
             await client.close()
 
     client.run(settings.require_discord_token())
-    return 0
+    return exit_code
 
 
 if __name__ == "__main__":

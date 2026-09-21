@@ -87,15 +87,23 @@ class DigestService:
         return self.repo.path / "data"
 
     def current_projects(self) -> list[ProjectCandidate]:
-        return [
-            ProjectCandidate(
-                title=project.title,
-                status=project.status,
-                goal=project.goal,
-                current_state=project.current_state,
+        projects: list[ProjectCandidate] = []
+
+        def read_projects(root: Path) -> None:
+            projects.extend(
+                ProjectCandidate(
+                    title=project.title,
+                    status=project.status,
+                    goal=project.goal,
+                    current_state=project.current_state,
+                )
+                for project in list_projects(root / "data")
             )
-            for project in list_projects(self.data_root)
-        ]
+
+        self.repo.write_artifact_locked(
+            commit_message="digest: read project updates", prepare=read_projects
+        )
+        return projects
 
     def generate(self, request: DigestRequest) -> DigestOutcome:
         period = DigestPeriod.from_label(request.period)

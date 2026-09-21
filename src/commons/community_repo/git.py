@@ -17,9 +17,8 @@ Correctness rules from the 2026-09-19 review:
 
 from __future__ import annotations
 
-import json
+import errno
 import os
-import socket
 import subprocess
 import time
 from collections.abc import Callable, Iterator
@@ -73,18 +72,17 @@ class LockedWriteResult:
     git: GitWriteResult
 
 
-def _pid_alive(pid: int) -> bool:
-    if pid <= 0 or os.name == "nt":
-        return True
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return True
-    return True
+def _file_lock(handle: int, *, unlock: bool = False) -> None:
+    """OS-owned locks survive slow work and are released on process exit."""
+    if os.name == "nt":
+        import msvcrt
+
+        os.lseek(handle, 0, os.SEEK_SET)
+        msvcrt.locking(handle, msvcrt.LK_UNLCK if unlock else msvcrt.LK_NBLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(handle, fcntl.LOCK_UN if unlock else fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 
 class CommunityRepo:
@@ -173,17 +171,18 @@ class CommunityRepo:
         if head is None:
             return False
 
-        marker = self._git("rev-parse", "--verify", PUSHED_REF)
-        if marker.ok:
-            return head != marker.stdout
-
         if not self.remote_configured():
             return True
 
         ref = self._git("rev-parse", "--verify", f"{self.remote}/{self.current_branch()}")
         if not ref.ok:
             return True
-        return head != ref.stdout
+        # The custom marker may predate a maintainer's push or our own pull.
+        # Only the synchronized remote's graph establishes remote persistence.
+        result = self._git("merge-base", "--is-ancestor", head, ref.stdout)
+        if result.returncode not in (0, 1):
+            raise GitError(f"could not compare local and remote commits: {result.stderr}")
+        return result.returncode == 1
 
     def has_pending_unpushed(self) -> bool:
         """A divergence from an established remote branch that needs recovery."""
@@ -216,64 +215,29 @@ class CommunityRepo:
 
         deadline = time.monotonic() + (self.lock_timeout if timeout is None else timeout)
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
-        handle: int | None = None
-        while handle is None:
-            try:
-                handle = os.open(str(self.lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            except FileExistsError:
-                if self._lock_is_stale():
-                    log.warning("removing stale community repo lock at %s", self.lock_path)
-                    try:
-                        os.unlink(self.lock_path)
-                        continue
-                    except OSError:
-                        # Cannot remove it (for example a file still open on
-                        # Windows): fall through to the deadline instead of
-                        # spinning forever (R09).
-                        pass
-                if time.monotonic() >= deadline:
-                    raise GitError(
-                        f"could not acquire community repo lock at {self.lock_path}"
-                    ) from None
-                time.sleep(0.1)
+        # Keep the file: unlinking it can create two independently locked inodes.
+        handle = os.open(str(self.lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+        acquired = False
         try:
-            owner = {"pid": os.getpid(), "host": socket.gethostname()}
-            os.write(handle, json.dumps(owner).encode())
+            while not acquired:
+                try:
+                    _file_lock(handle)
+                    acquired = True
+                except OSError as exc:
+                    if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                        raise GitError(f"cannot lock {self.lock_path}: {exc}") from exc
+                    if time.monotonic() >= deadline:
+                        raise GitError(
+                            f"could not acquire community repo lock at {self.lock_path}"
+                        ) from exc
+                    time.sleep(min(0.1, max(0, deadline - time.monotonic())))
             yield
         finally:
-            if handle is not None:
-                os.close(handle)
             try:
-                os.unlink(self.lock_path)
-            except OSError:
-                pass
-
-    def _read_lock_owner(self) -> dict[str, object]:
-        assert self.lock_path is not None
-        try:
-            data = json.loads(self.lock_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return {}
-        return data if isinstance(data, dict) else {}
-
-    def _lock_is_stale(self) -> bool:
-        assert self.lock_path is not None
-        try:
-            age = time.time() - self.lock_path.stat().st_mtime
-        except OSError:
-            return False
-        if age <= self.lock_timeout:
-            return False
-        owner = self._read_lock_owner()
-        owner_pid = int(owner.get("pid") or 0)
-        if (
-            os.name != "nt"
-            and owner.get("host") == socket.gethostname()
-            and owner_pid != os.getpid()
-            and _pid_alive(owner_pid)
-        ):
-            return False
-        return True
+                if acquired:
+                    _file_lock(handle, unlock=True)
+            finally:
+                os.close(handle)
 
     # --- write path -----------------------------------------------------
     def pull_rebase(self) -> CommandResult:
@@ -312,19 +276,9 @@ class CommunityRepo:
                 commit_sha=None,
                 detail=detail or "no changes to commit",
             )
-        push = self.push()
-        if not push.ok:
-            raise GitPushError(
-                f"{relative_path} is committed locally but could not be pushed to "
-                f"{self.remote}/{self.current_branch()}: {push.stderr or push.stdout}"
-            )
-        self._mark_pushed()
-        return GitWriteResult(
-            relative_path=relative_path,
-            committed=False,
-            pushed=True,
-            commit_sha=self.head_sha(),
-            detail="pushed a previously pending commit",
+        raise GitPushError(
+            f"{relative_path} has pending local commits; push them explicitly "
+            "and retry after verifying the remote"
         )
 
     def write_artifact_locked(

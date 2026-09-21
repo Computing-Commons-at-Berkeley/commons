@@ -99,6 +99,27 @@ class ArchiveService:
         return self.repo.path / "data"
 
     def archive(self, request: ArchiveRequest) -> ArchiveOutcome:
+        def existing_plan(root: Path) -> ArtifactPlan | None:
+            existing = find_artifact_by_source(root / "data", request.source)
+            if existing is None:
+                return None
+            return ArtifactPlan(
+                relative_path=_relative_to(root, existing),
+                detail="an artifact already references this Discord source",
+            )
+
+        checked = self.repo.write_artifact_locked(
+            commit_message="archive: check existing note", prepare=existing_plan
+        )
+        if checked.plan is not None:
+            return ArchiveOutcome(
+                title=_read_title(self.repo.path / checked.plan.relative_path),
+                relative_path=checked.plan.relative_path,
+                created=False,
+                commit_sha=checked.git.commit_sha,
+                detail=checked.plan.detail,
+            )
+
         transcript = render_transcript(
             request.messages,
             max_chars=self.max_article_chars,

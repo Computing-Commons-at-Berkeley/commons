@@ -42,11 +42,12 @@ Every durable write is serialized with a lock file under `RUNTIME_DIR` and runs
 
 ~~~text
 runtime/
-  news.db            SQLite news state (later milestone)
+  news.db            SQLite news state
   cache/
   logs/commons.log
   community_repo.lock
   llm_usage.jsonl
+  scheduler_state.json
 ~~~
 
 `RUNTIME_DIR` must not live inside `COMMUNITY_REPO_PATH`; startup validation
@@ -80,6 +81,11 @@ Scheduling runs in-process (`commons/scheduler.py`); there is no separate servic
   `#digest` when `policy.digest.scheduled_weekly` is true
 
 Blocking work runs off the event loop, and one failing job never stops the loop.
+Failures/deferred work retry after 15 minutes. Last successful runs are persisted;
+retry deadlines themselves are not, so restarting may retry sooner.
+Use a fixed working directory and absolute repository/runtime paths in the
+service configuration. See `OPERATIONS.md` for alerts, partial digest delivery
+and the requirement to stop old processes when upgrading the lock implementation.
 
 ## Local UI
 

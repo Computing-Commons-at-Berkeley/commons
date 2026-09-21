@@ -46,6 +46,7 @@ class IngestionResult:
     skipped: int
     error: str | None = None
     not_modified: bool = False
+    consecutive_failures: int = 0
 
 
 def _now_iso() -> str:
@@ -261,7 +262,14 @@ def ingest_source(
     except Exception as exc:  # noqa: BLE001 - a bad source must not stop the run
         log.warning("news source %s failed: %s", source.id, exc)
         db.record_source_fetch(connection, source.id, error=True)
-        return IngestionResult(source.id, 0, 0, 0, error=str(exc))
+        return IngestionResult(
+            source.id,
+            0,
+            0,
+            0,
+            error=str(exc),
+            consecutive_failures=(state["error_count"] if state else 0) + 1,
+        )
 
     if meta.get("not_modified"):
         db.record_source_fetch(connection, source.id, etag=meta.get("etag"))

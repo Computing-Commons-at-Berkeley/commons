@@ -56,8 +56,8 @@ no authentication, and the community does not depend on it.
 ## Bootstrap the Discord server
 
 ~~~powershell
-python scripts/sync_discord.py --dry-run   # print the plan
-python scripts/sync_discord.py             # create missing roles/categories/channels
+.\.venv\Scripts\python scripts/sync_discord.py --dry-run
+.\.venv\Scripts\python scripts/sync_discord.py
 ~~~
 
 The script is non-destructive: objects that exist in Discord but not in
@@ -65,7 +65,9 @@ The script is non-destructive: objects that exist in Discord but not in
 
 ## Test guild smoke test (required for Discord changes)
 
-1. Create or reuse a private test guild and invite the bot.
+1. Create or reuse a private test guild and invite the bot. Use a separate
+   throwaway remote and checkout populated with the community config, point
+   `COMMUNITY_REPO_PATH` there, and use a separate `RUNTIME_DIR`.
 2. Run `scripts/sync_discord.py --dry-run`, then run it for real.
 3. Start the bot and confirm the `Archive` message context action and the
    `/archive`, `/project`, and `/digest` commands appear.
@@ -76,10 +78,13 @@ The script is non-destructive: objects that exist in Discord but not in
    and that a commit was pushed.
 8. Invoke Archive again on the same source and confirm it reports the existing
    artifact instead of duplicating it.
-9. Break the remote (point `origin` at a bad path) and confirm Archive reports a
-   clear failure and does not claim success. Restore the correct remote before
-   continuing; later steps must not run against a broken remote. The retry keeps
-   failing until the pending commit is pushed or reset explicitly.
+9. In the throwaway checkout only, set an invalid push URL with
+   `git remote set-url --push origin <nonexistent-local-path>`, leaving the fetch
+   URL intact. Archive a new source: confirm a local commit exists but the command
+   reports push failure. Restore the previous push URL (or unset the override
+   with `git config --unset-all remote.origin.pushurl` if none existed). Confirm
+   retries still fail until you explicitly push the pending commit, then confirm
+   the same source returns its existing artifact without another LLM call.
 10. Run `/project name:"<a real idea>" goal:"<one line>"` and confirm the bot
     replies with an artifact path and that `data/projects/<slug>.md` exists.
 11. Run `/project` again with the same name, or from inside the same thread, and
@@ -87,13 +92,24 @@ The script is non-destructive: objects that exist in Discord but not in
 12. Run `/digest period:7d` and confirm it writes `data/digests/<date>-7d.md`
     with at least one section (including news or project activity when present)
     and pushes a commit.
-13. In a quiet period, run `/digest period:1d` and confirm it fails clearly
-    rather than committing an empty digest.
+13. With all digest inputs empty in the isolated test instance (Discord activity,
+    news, radar and project records), run `/digest period:1d` and confirm it fails
+    clearly rather than committing an empty digest.
 14. Let the scheduler's weekly job run (or temporarily shorten its interval) and
-    confirm it posts a digest embed to `#digest` using the same code path.
+    confirm it posts the actual synthesis to `#digest`, including multiple text
+    chunks when needed. Induce a generation or delivery failure and verify the
+    `#bot-log` notice and retry, following the recovery notes in `OPERATIONS.md`.
 15. With `GITHUB_TOKEN` set, run `/digest period:7d` and confirm the Berkeley /
     OSS Radar section reflects activity from `config/watchlists.yaml`, or is
     omitted when there is nothing new.
+
+Also test archive denial with read-history permission removed, archiving disabled
+by policy, and an inaccessible private thread. Check that no artifact or LLM call
+results. An authorized private-thread member and the bot must both have access.
+For digest input checks, use a busy channel, an archived public thread, and a
+project with distinct goal/current-state text; verify the latest messages,
+thread activity and both project fields reach the synthesis. Private threads are
+excluded from automatic community digests.
 
 ## Layout
 

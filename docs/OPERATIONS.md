@@ -24,6 +24,7 @@ conversation.
 - Cache: `RUNTIME_DIR/cache/`
 - LLM usage: `RUNTIME_DIR/llm_usage.jsonl`
 - Write lock: `RUNTIME_DIR/community_repo.lock`
+- Scheduler last successful runs: `RUNTIME_DIR/scheduler_state.json`
 
 These are rebuildable. They are not backed up as if they were community memory.
 
@@ -46,13 +47,31 @@ Recovery:
 4. Retry the Discord action only if the artifact truly was not created; otherwise
    the idempotency check returns the existing note.
 
-A stale lock file can be removed if no bot process is running. Stale locks are
-also detected and cleared automatically after the lock timeout.
+The lock file stays on disk. The operating system releases ownership when the
+holder exits; file age never makes a live lock safe to steal. Do not delete the
+file while a bot is running. Stop all older bot processes before upgrading from
+the previous stale-file locking implementation. Every writer sharing a checkout
+must use the same lock path on the same host.
+
+Pending commits are checked against the synchronized remote branch. A manual
+push needs no edit to the legacy `refs/tc/last-pushed` marker. A later command
+will not silently push a previous failed command's commit.
 
 ## Operational notifications
 
 Startup, durable-write failures and LLM budget warnings are posted to `#bot-log`.
-Only meaningful events are sent; routine news fetches are not.
+Scheduled digest failures/deferred delivery and news sources failing three times
+consecutively also produce notices. These recurring alerts are deduplicated
+until recovery within one process lifetime; a restart may repeat an alert.
+Recovery produces a notice. Routine successful news fetches are not reported.
+
+Failed or deferred scheduled work retries after 15 minutes. A Discord delivery
+failure can leave an already-pushed digest or partially delivered chunks. Check
+`#digest` and the artifact before manual retries; delivery is not exactly-once,
+and automatic retry can regenerate/repost content. Completed successes are saved
+after the job batch and determine due times after restart. Retry deadlines are
+in memory only, so a restart may retry sooner. Deleting scheduler state makes
+jobs due again. A crash before the state save can also repeat a completed job.
 
 ## LLM budget
 
