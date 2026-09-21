@@ -32,6 +32,10 @@ class GuildState:
     channels: set[str] = field(default_factory=set)
     private_categories: set[str] = field(default_factory=set)
     private_channels: set[str] = field(default_factory=set)
+    # Channel names grouped by category name ("" when uncategorised). Discord
+    # allows the same name in two categories, so the plan and the apply step must
+    # both test existence within the target category.
+    channels_by_category: dict[str, set[str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -89,6 +93,7 @@ def guild_state_from_names(
     channels: set[str] | None = None,
     private_categories: set[str] | None = None,
     private_channels: set[str] | None = None,
+    channels_by_category: dict[str, set[str]] | None = None,
 ) -> GuildState:
     return GuildState(
         roles=roles or set(),
@@ -96,26 +101,31 @@ def guild_state_from_names(
         channels=channels or set(),
         private_categories=private_categories or set(),
         private_channels=private_channels or set(),
+        channels_by_category=channels_by_category or {},
     )
 
 
 def guild_state(guild: discord.Guild) -> GuildState:
+    channels: set[str] = set()
+    private_channels: set[str] = set()
+    by_category: dict[str, set[str]] = {}
+    for channel in guild.channels:
+        if isinstance(channel, discord.CategoryChannel):
+            continue
+        channels.add(channel.name)
+        category_name = channel.category.name if channel.category else ""
+        by_category.setdefault(category_name, set()).add(channel.name)
+        if _is_private(channel):
+            private_channels.add(channel.name)
     return GuildState(
         roles={role.name for role in guild.roles if not role.is_default() and not role.managed},
         categories={category.name for category in guild.categories},
-        channels={
-            channel.name
-            for channel in guild.channels
-            if not isinstance(channel, discord.CategoryChannel)
-        },
+        channels=channels,
         private_categories={
             category.name for category in guild.categories if _is_private(category)
         },
-        private_channels={
-            channel.name
-            for channel in guild.channels
-            if not isinstance(channel, discord.CategoryChannel) and _is_private(channel)
-        },
+        private_channels=private_channels,
+        channels_by_category=by_category,
     )
 
 
@@ -142,8 +152,13 @@ def plan_sync(existing: GuildState, desired: DiscordConfig) -> SyncPlan:
             and category not in existing.private_categories
         ):
             plan.permission_differences.append(f"category {category} is not private in Discord")
+        present = (
+            existing.channels_by_category.get(category, set())
+            if existing.channels_by_category
+            else existing.channels
+        )
         for channel in spec.channels:
-            if channel.name not in existing.channels:
+            if channel.name not in present:
                 plan.create_channels.append((category, channel.name))
             elif channel.private and channel.name not in existing.private_channels:
                 plan.permission_differences.append(
@@ -172,28 +187,28 @@ async def apply_sync(guild: discord.Guild, config: DiscordConfig, plan: SyncPlan
         )
         log.info("created role %s (administrator=%s)", spec.name, spec.administrator)
 
-    for category_name, spec in config.categories.items():
+    for category_name in plan.create_categories:
+        spec = config.categories[category_name]
+        options = {"overwrites": _private_overwrites(guild)} if spec.private else {}
+        await guild.create_category(category_name, **options, reason="sync_discord")
+        log.info("created category %s (private=%s)", category_name, spec.private)
+
+    # Follow the plan exactly, so a dry run and the applied change agree.
+    for category_name, channel_name in plan.create_channels:
         category = discord.utils.get(guild.categories, name=category_name)
         if category is None:
-            options = {"overwrites": _private_overwrites(guild)} if spec.private else {}
-            category = await guild.create_category(category_name, **options, reason="sync_discord")
-            log.info("created category %s (private=%s)", category_name, spec.private)
-        for channel in spec.channels:
-            if discord.utils.get(category.channels, name=channel.name) is not None:
-                continue
-            options = {"overwrites": _private_overwrites(guild)} if channel.private else {}
-            await category.create_text_channel(
-                channel.name,
-                topic=channel.topic,
-                **options,
-                reason="sync_discord",
-            )
-            log.info(
-                "created channel #%s in %s (private=%s)",
-                channel.name,
-                category_name,
-                channel.private,
-            )
+            log.warning("category %s vanished before channel creation", category_name)
+            continue
+        spec = next(
+            channel
+            for channel in config.categories[category_name].channels
+            if channel.name == channel_name
+        )
+        options = {"overwrites": _private_overwrites(guild)} if spec.private else {}
+        await category.create_text_channel(
+            spec.name, topic=spec.topic, **options, reason="sync_discord"
+        )
+        log.info("created channel #%s in %s (private=%s)", spec.name, category_name, spec.private)
 
 
 async def sync_guild(
@@ -205,7 +220,15 @@ async def sync_guild(
     plan = plan_sync(guild_state(guild), config)
     if dry_run:
         return plan
-    await apply_sync(guild, config, plan)
+    try:
+        await apply_sync(guild, config, plan)
+    except discord.Forbidden as exc:
+        raise RuntimeError(
+            "Discord denied a bootstrap change. The bot is missing a permission, or it tried "
+            "to grant a permission it does not itself hold (for example administrator on the "
+            "admin role). Grant the bot's role Manage Channels and Manage Roles, plus the "
+            "permission being granted, or set administrator: false in discord.yaml."
+        ) from exc
     return plan
 
 

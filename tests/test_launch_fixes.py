@@ -238,7 +238,10 @@ async def test_bootstrap_uses_real_sdk_overwrite_validation():
             }
         }
     )
-    await sync.apply_sync(guild, config, sync.SyncPlan())
+    # The plan is authoritative: what a dry run reports is what apply creates.
+    plan = sync.plan_sync(sync.guild_state(guild), config)
+    assert len(plan.create_channels) == 2
+    await sync.apply_sync(guild, config, plan)
     assert len(guild.channels) == 4
     private = next(c for c in guild.categories if c.name == "PRIVATE")
     ops = next(c for c in guild.channels if c.name == "ops")
