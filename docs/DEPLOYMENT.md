@@ -62,6 +62,10 @@ Foreground:
 tc-bot
 ~~~
 
+On Windows, `scripts/start_bot.cmd` does the same with the working directory
+fixed and the window kept open on exit, so it works well as a desktop shortcut.
+Use `scripts/run_bot.cmd` for unattended startup instead.
+
 Persistent process. Run the bot as the account that owns the Git credentials, so
 that `git push` to the private community repository works.
 
